@@ -1,0 +1,13 @@
+[Unit]
+Description=Simple proxy for using android binder based bluetooth through vhci.
+After=droid-hal-init.service
+Before=bluetooth.service
+
+[Service]
+Type=notify
+ExecStart=/usr/sbin/bluebinder
+Restart=always
+
+[Install]
+WantedBy=graphical.target
+
