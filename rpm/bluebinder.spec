@@ -1,7 +1,7 @@
 Name:		bluebinder
 Version:	1.0.0
 Release:	1%{?dist}
-Summary:	bluebinder is a simple proxy for using android binder based bluetooth through vhci.
+Summary:        a simple proxy for using android binder based bluetooth through vhci.
 
 Group:		Applications/System
 License:	GPLv2+
@@ -9,6 +9,8 @@ URL:		https://github.com/mer-hybris/bluebinder
 Source:		%{name}-%{version}.tar.bz2
 
 BuildRequires:	libgbinder-devel >= 1.0.7
+BuildRequires:  pkgconfig(bluez5)
+BuildRequires:  pkgconfig(libsystemd)
 Requires:	bluez5
 
 %description
