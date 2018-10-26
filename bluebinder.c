@@ -26,16 +26,15 @@
  *
  */
 
-#include <stdio.h>
-#include <errno.h>
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <alloca.h>
-#include <stdbool.h>
 #include <termios.h>
+#include <unistd.h>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/hci.h>
@@ -64,7 +63,7 @@
 struct proxy {
     /* Receive commands, ACL and SCO data */
     int host_fd;
-    uint8_t host_buf[4096];
+    gchar host_buf[4096];
     uint16_t host_len;
 
     GMainLoop *loop;
@@ -88,7 +87,7 @@ host_write_packet(
 
     local_request = gbinder_client_new_request(proxy->binder_client);
     if (!local_request) {
-        fprintf(stderr, "failed to allocate local gbinder request\n");
+        fprintf(stderr, "Failed to allocate local gbinder request\n");
         g_main_loop_quit(proxy->loop);
         return;
     }
@@ -98,11 +97,11 @@ host_write_packet(
     gbinder_writer_append_hidl_vec(&writer, buf + 1, len - 1, sizeof(uint8_t));
 
     if (((uint8_t*)buf)[0] == HCI_COMMAND_PKT) {
-            reply = gbinder_client_transact_sync_reply(proxy->binder_client, 2 /* sendHciCommand */, local_request, &status);
+        reply = gbinder_client_transact_sync_reply(proxy->binder_client, 2 /* sendHciCommand */, local_request, &status);
     } else if (((uint8_t*)buf)[0] == HCI_ACLDATA_PKT) {
-            reply = gbinder_client_transact_sync_reply(proxy->binder_client, 3 /* sendAclData */, local_request, &status);
+        reply = gbinder_client_transact_sync_reply(proxy->binder_client, 3 /* sendAclData */, local_request, &status);
     } else if (((uint8_t*)buf)[0] == HCI_SCODATA_PKT) {
-            reply = gbinder_client_transact_sync_reply(proxy->binder_client, 4 /* sendScoData */, local_request, &status);
+        reply = gbinder_client_transact_sync_reply(proxy->binder_client, 4 /* sendScoData */, local_request, &status);
     } else {
         fprintf(stderr, "Received incorrect packet type from HCI client.\n");
         g_main_loop_quit(proxy->loop);
@@ -126,12 +125,18 @@ dev_write_packet(
     uint16_t len)
 {
     while (len > 0) {
-        ssize_t written;
+        gsize written;
+        GError *error = NULL;
 
-        written = write(proxy->host_fd, buf, len);
-        if (written < 0) {
-            if (errno == EAGAIN || errno == EINTR)
-                continue;
+        GIOStatus status = g_io_channel_write_chars(
+            proxy->channel,
+            buf,
+            len,
+            &written,
+            &error);
+
+        if (status == G_IO_STATUS_ERROR) {
+            fprintf(stderr, "Writing packet to device failed: %s\n", error->message);
             g_main_loop_quit(proxy->loop);
             return;
         }
@@ -150,15 +155,12 @@ host_read_callback(
 {
     struct proxy *proxy = user_data;
 
-    int fd;
-
     hci_command_hdr *cmd_hdr;
     hci_acl_hdr *acl_hdr;
     hci_sco_hdr *sco_hdr;
-    ssize_t len;
+    gsize len;
     uint16_t pktlen;
-
-    fd = g_io_channel_unix_get_fd(channel);
+    GError *error = NULL;
 
     if (io_conditions & (G_IO_ERR | G_IO_NVAL)) {
         fprintf(stderr, "Error from host descriptor\n");
@@ -172,13 +174,18 @@ host_read_callback(
         return false;
     }
 
-    len = read(fd, proxy->host_buf + proxy->host_len,
-                sizeof(proxy->host_buf) - proxy->host_len);
-    if (len < 0) {
-        if (errno == EAGAIN || errno == EINTR)
-            return true;
+    GIOStatus status = g_io_channel_read_chars(
+        proxy->channel,
+        proxy->host_buf + proxy->host_len,
+        sizeof(proxy->host_buf) - proxy->host_len, &len,
+        &error);
 
-        fprintf(stderr, "Read from host descriptor failed\n");
+    if (status == G_IO_STATUS_AGAIN) {
+        return true;
+    }
+
+    if (status == G_IO_STATUS_ERROR) {
+        fprintf(stderr, "Read from host descriptor failed: %s\n", error->message);
         g_main_loop_quit(proxy->loop);
         return false;
     }
@@ -217,7 +224,7 @@ process_packet:
             return true;
         default:
             fprintf(stderr, "Received unknown host packet type 0x%02x\n",
-                                proxy->host_buf[0]);
+                proxy->host_buf[0]);
             g_main_loop_quit(proxy->loop);
             return false;
     }
@@ -229,7 +236,7 @@ process_packet:
 
     if (proxy->host_len > pktlen) {
         memmove(proxy->host_buf, proxy->host_buf + pktlen,
-                        proxy->host_len - pktlen);
+            proxy->host_len - pktlen);
         proxy->host_len -= pktlen;
         goto process_packet;
     }
@@ -254,10 +261,10 @@ setup_watch(
     g_io_channel_set_buffered(proxy->channel, FALSE);
 
     proxy->gio_channel_event_id = g_io_add_watch(
-                proxy->channel,
-                G_IO_IN | G_IO_NVAL | G_IO_HUP | G_IO_ERR,
-                host_read_callback,
-                proxy);
+        proxy->channel,
+        G_IO_IN | G_IO_NVAL | G_IO_HUP | G_IO_ERR,
+        host_read_callback,
+        proxy);
 
     return true;
 }
@@ -325,7 +332,7 @@ bluebinder_callbacks_transact(
     const char* iface = gbinder_remote_request_interface(req);
 
     if (flags & GBINDER_TX_FLAG_ONEWAY) {
-        fprintf(stderr, "expected non-oneway transaction\n");
+        fprintf(stderr, "Expected non-oneway transaction\n");
         return NULL;
     }
 
@@ -341,7 +348,7 @@ bluebinder_callbacks_transact(
                 return NULL;
             }
 
-            fprintf(stderr, "binder is ok, opening virtual device\n");
+            fprintf(stderr, "Binder interface initialized, opening virtual device\n");
 
             proxy->host_fd = open_vhci(HCI_PRIMARY);
             if (proxy->host_fd < 0) {
@@ -362,7 +369,7 @@ bluebinder_callbacks_transact(
 
             return gbinder_local_object_new_reply(obj);
         } else if (code == 2 || code == 3 || code == 4) {
-        unsigned int count, elemsize;
+            unsigned int count, elemsize;
             GBinderReader reader;
             const uint8_t *vec;
             uint8_t *packet;
@@ -371,7 +378,7 @@ bluebinder_callbacks_transact(
 
             vec = gbinder_reader_read_hidl_vec(&reader, &count, &elemsize);
             if (elemsize != 1) {
-                fprintf(stderr, "received unexpected array element size, expected sizeof(uint8_t)\n");
+                fprintf(stderr, "Received unexpected array element size, expected sizeof(uint8_t)\n");
                 g_main_loop_quit(proxy->loop);
                 *status = GBINDER_STATUS_FAILED;
                 return NULL;
@@ -437,7 +444,7 @@ int main(int argc, char *argv[])
     proxy.binder_client = gbinder_client_new(remote, BINDER_BLUETOOTH_SERVICE_IFACE);
 
     if (!proxy.binder_client) {
-        fprintf(stderr, "failed to connect to %s binder service", fqname);
+        fprintf(stderr, "Failed to connect to %s binder service", fqname);
         goto unref;
     }
 
