@@ -343,6 +343,7 @@ bluebinder_callbacks_transact(
             gbinder_remote_request_read_int32(req, &result);
 
             if (result != 0) {
+                fprintf(stderr, "Bluetooth binder service failed\n");
                 g_main_loop_quit(proxy->loop);
                 *status = GBINDER_STATUS_FAILED;
                 return NULL;
@@ -352,12 +353,14 @@ bluebinder_callbacks_transact(
 
             proxy->host_fd = open_vhci(HCI_PRIMARY);
             if (proxy->host_fd < 0) {
+                fprintf(stderr, "Unable to open virtual device\n");
                 g_main_loop_quit(proxy->loop);
                 *status = GBINDER_STATUS_FAILED;
                 return NULL;
             }
 
             if (!setup_watch(proxy)) {
+                fprintf(stderr, "Unable to setup watch\n");
                 g_main_loop_quit(proxy->loop);
                 *status = GBINDER_STATUS_FAILED;
                 return NULL;
@@ -445,6 +448,7 @@ int main(int argc, char *argv[])
 
     if (!proxy.binder_client) {
         fprintf(stderr, "Failed to connect to %s binder service", fqname);
+        err = 1;
         goto unref;
     }
 
@@ -464,6 +468,7 @@ int main(int argc, char *argv[])
 
     if (status != GBINDER_STATUS_OK || !reply) {
         fprintf(stderr, "ERROR: init reply: %p, %d\n", reply, status);
+        err = 2;
         goto unref;
     }
 
@@ -482,7 +487,15 @@ int main(int argc, char *argv[])
 
     g_main_loop_run(proxy.loop);
 
-unref:
+    g_main_loop_unref(proxy.loop);
+
+    reply = gbinder_client_transact_sync_reply
+        (proxy.binder_client, 5 /* close */, NULL, &status);
+
+    if (status != GBINDER_STATUS_OK || !reply) {
+        fprintf(stderr, "ERROR: close reply: %p, %d\n", reply, status);
+    }
+
     if (sigtrm) {
         g_source_remove(sigtrm);
     }
@@ -492,6 +505,8 @@ unref:
     }
 
     gbinder_remote_object_remove_handler(remote, death_id);
+
+unref:
 
     gbinder_local_request_unref(initialize_request);
     gbinder_remote_reply_unref(reply);
@@ -503,11 +518,14 @@ unref:
 
     gbinder_servicemanager_unref(sm);
 
-    g_source_remove(proxy.gio_channel_event_id);
-    g_io_channel_shutdown(proxy.channel, TRUE, NULL);
-    g_io_channel_unref(proxy.channel);
+    if (proxy.gio_channel_event_id) {
+        g_source_remove(proxy.gio_channel_event_id);
+    }
 
-    g_main_loop_unref(proxy.loop);
+    if (proxy.channel) {
+        g_io_channel_shutdown(proxy.channel, TRUE, NULL);
+        g_io_channel_unref(proxy.channel);
+    }
 
     close(proxy.host_fd);
 
