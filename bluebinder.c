@@ -370,7 +370,7 @@ bluebinder_callbacks_transact(
 
             *status = GBINDER_STATUS_OK;
 
-            return gbinder_local_object_new_reply(obj);
+            return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
         } else if (code == 2 || code == 3 || code == 4) {
             unsigned int count, elemsize;
             GBinderReader reader;
@@ -401,7 +401,7 @@ bluebinder_callbacks_transact(
 
             *status = GBINDER_STATUS_OK;
 
-            return gbinder_local_object_new_reply(obj);
+            return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
         } else {
             fprintf(stderr, "Unknown binder transaction.\n");
             g_main_loop_quit(proxy->loop);
