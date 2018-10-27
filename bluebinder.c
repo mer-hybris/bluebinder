@@ -94,7 +94,7 @@ host_write_packet(
 
     gbinder_local_request_init_writer(local_request, &writer);
     // data, without the package type.
-    gbinder_writer_append_hidl_vec(&writer, buf + 1, len - 1, sizeof(uint8_t));
+    gbinder_writer_append_hidl_vec(&writer, (void*)((char*)buf + 1), len - 1, sizeof(uint8_t));
 
     if (((uint8_t*)buf)[0] == HCI_COMMAND_PKT) {
         reply = gbinder_client_transact_sync_reply(proxy->binder_client, 2 /* sendHciCommand */, local_request, &status);
