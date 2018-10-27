@@ -5,8 +5,10 @@ Before=bluetooth.service
 
 [Service]
 Type=notify
+ExecStartPre=/usr/bin/droid/bluebinder_wait.sh
 ExecStart=/usr/sbin/bluebinder
 Restart=always
+TimeoutStartSec=60
 
 [Install]
 WantedBy=graphical.target
