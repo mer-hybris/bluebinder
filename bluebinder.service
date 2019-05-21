@@ -9,6 +9,17 @@ ExecStartPre=/usr/bin/droid/bluebinder_wait.sh
 ExecStart=/usr/sbin/bluebinder
 Restart=always
 TimeoutStartSec=60
+# Sandboxing
+Capabilities=
+CapabilityBoundingSet=
+DeviceAllow=/dev/hwbinder rw
+DeviceAllow=/dev/vhci rw
+DevicePolicy=strict
+NoNewPrivileges=yes
+PrivateNetwork=true
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
 
 [Install]
 WantedBy=graphical.target
