@@ -2,8 +2,8 @@
 
 while true
 do
-    bt_status=$(/usr/bin/getprop init.svc.bluetooth-1-0)
-    if [ "$bt_status" = "running" ] ; then
+    bt_status=$(/usr/bin/getprop |grep "init.svc.*bluetooth" |grep -o "\[running\]")
+    if [ "$bt_status" = "[running]" ] ; then
         # If the bluetooth address is provided by another script use that
         if [ -f /var/lib/bluetooth/board-address ] ; then
             exit 0
