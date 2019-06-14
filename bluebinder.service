@@ -10,8 +10,7 @@ ExecStart=/usr/sbin/bluebinder
 Restart=always
 TimeoutStartSec=60
 # Sandboxing
-Capabilities=
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 DeviceAllow=/dev/hwbinder rw
 DeviceAllow=/dev/vhci rw
 DevicePolicy=strict
