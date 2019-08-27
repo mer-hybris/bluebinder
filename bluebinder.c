@@ -110,7 +110,7 @@ host_write_packet(
     if (status != GBINDER_STATUS_OK || !reply) {
         fprintf(stderr, "%s: status = %d reply = %p\n", __func__, status, reply);
         // can this happen legitimately?
-        g_main_loop_quit(proxy->loop);
+        //g_main_loop_quit(proxy->loop);
     }
 
     gbinder_local_request_unref(local_request);
