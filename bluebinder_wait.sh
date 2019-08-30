@@ -1,8 +1,5 @@
 #!/bin/sh
 
-# needed on some devices to get bluetooth functional
-setprop persist.vendor.service.bdroid.sibs 0
-
 while true
 do
     bt_status=$(/usr/bin/getprop |grep "init.svc.*bluetooth" |grep -o "\[running\]")
