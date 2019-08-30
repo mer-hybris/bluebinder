@@ -163,7 +163,8 @@ dev_write_packet(
 
         if (status == G_IO_STATUS_ERROR) {
             fprintf(stderr, "Writing packet to device failed: %s\n", error->message);
-            g_main_loop_quit(proxy->loop);
+            // do not quit here, since this might happen if the user switches off
+            // bt but the hw still wants to send a final event.
             return;
         }
 
