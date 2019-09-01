@@ -70,7 +70,35 @@ struct proxy {
     GIOChannel *channel;
     GBinderClient *binder_client;
     int gio_channel_event_id;
+
+    int binder_replies_pending;
 };
+
+void
+handle_binder_reply(
+    GBinderClient* client,
+    GBinderRemoteReply* reply,
+    int status,
+    void* user_data)
+{
+    struct proxy *proxy = user_data;
+
+    proxy->binder_replies_pending--;
+
+    if (status != GBINDER_STATUS_OK || !reply) {
+        fprintf(stderr, "%s: binder transaction has failed: status = %d reply = %p\n", __func__, status, reply);
+        g_main_loop_quit(proxy->loop);
+    }
+}
+
+gboolean
+waiting_for_binder_reply(
+    gpointer user_data
+)
+{
+    struct proxy *proxy = user_data;
+    return proxy->binder_replies_pending > 0;
+}
 
 static
 void
@@ -79,10 +107,7 @@ host_write_packet(
     void *buf,
     uint16_t len)
 {
-    int status = GBINDER_STATUS_FAILED;
-
     GBinderLocalRequest *local_request = NULL;
-    GBinderRemoteReply *reply = NULL;
     GBinderWriter writer;
 
     local_request = gbinder_client_new_request(proxy->binder_client);
@@ -96,25 +121,26 @@ host_write_packet(
     // data, without the package type.
     gbinder_writer_append_hidl_vec(&writer, (void*)((char*)buf + 1), len - 1, sizeof(uint8_t));
 
+    proxy->binder_replies_pending++;
+    // priority must be higher than the gio channel, otherwise we might process a second command
+    // before the first one was accepted.
+    // but it must be lower than the binder reply callback since otherwise we might send more packets
+    // than the remote can handle.
+    // it is defined in libgbinder as G_PRIORITY_DEFAULT_IDLE and must stay in sync with this
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE + 1, waiting_for_binder_reply, proxy, NULL);
+
     if (((uint8_t*)buf)[0] == HCI_COMMAND_PKT) {
-        reply = gbinder_client_transact_sync_reply(proxy->binder_client, 2 /* sendHciCommand */, local_request, &status);
+        gbinder_client_transact(proxy->binder_client, 2 /* sendHciCommand */, 0, local_request, handle_binder_reply, NULL, proxy);
     } else if (((uint8_t*)buf)[0] == HCI_ACLDATA_PKT) {
-        reply = gbinder_client_transact_sync_reply(proxy->binder_client, 3 /* sendAclData */, local_request, &status);
+        gbinder_client_transact(proxy->binder_client, 3 /* sendAclData */, 0,  local_request, handle_binder_reply, NULL, proxy);
     } else if (((uint8_t*)buf)[0] == HCI_SCODATA_PKT) {
-        reply = gbinder_client_transact_sync_reply(proxy->binder_client, 4 /* sendScoData */, local_request, &status);
+        gbinder_client_transact(proxy->binder_client, 4 /* sendScoData */, 0,  local_request, handle_binder_reply, NULL, proxy);
     } else {
         fprintf(stderr, "Received incorrect packet type from HCI client.\n");
         g_main_loop_quit(proxy->loop);
     }
 
-    if (status != GBINDER_STATUS_OK || !reply) {
-        fprintf(stderr, "%s: status = %d reply = %p\n", __func__, status, reply);
-        // can this happen legitimately?
-        g_main_loop_quit(proxy->loop);
-    }
-
     gbinder_local_request_unref(local_request);
-    gbinder_remote_reply_unref(reply);
 }
 
 static
@@ -137,7 +163,8 @@ dev_write_packet(
 
         if (status == G_IO_STATUS_ERROR) {
             fprintf(stderr, "Writing packet to device failed: %s\n", error->message);
-            g_main_loop_quit(proxy->loop);
+            // do not quit here, since this might happen if the user switches off
+            // bt but the hw still wants to send a final event.
             return;
         }
 
@@ -260,11 +287,13 @@ setup_watch(
     g_io_channel_set_encoding(proxy->channel, NULL, NULL);
     g_io_channel_set_buffered(proxy->channel, FALSE);
 
-    proxy->gio_channel_event_id = g_io_add_watch(
+    proxy->gio_channel_event_id = g_io_add_watch_full(
         proxy->channel,
+        G_PRIORITY_DEFAULT_IDLE + 2, // see host_write_packet
         G_IO_IN | G_IO_NVAL | G_IO_HUP | G_IO_ERR,
         host_read_callback,
-        proxy);
+        proxy,
+        NULL);
 
     return true;
 }
