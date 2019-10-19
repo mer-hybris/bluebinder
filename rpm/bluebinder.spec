@@ -11,6 +11,7 @@ Source:         %{name}-%{version}.tar.bz2
 BuildRequires:  libgbinder-devel >= 1.0.7
 BuildRequires:  pkgconfig(bluez5)
 BuildRequires:  pkgconfig(libsystemd)
+Requires:       gawk
 Requires:       bluez5
 Requires:       /usr/bin/getprop
 

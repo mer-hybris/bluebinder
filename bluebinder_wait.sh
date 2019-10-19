@@ -24,6 +24,12 @@ do
             chown root:root /var/lib/bluetooth/board-address
             chmod 644 /var/lib/bluetooth/board-address
             exit 0
+        elif [ "$(getprop persist.vendor.service.bdroid.bdaddr)" != "" ]; then
+            mkdir -p /var/lib/bluetooth
+            echo $(getprop persist.vendor.service.bdroid.bdaddr |awk -F: '{do printf "%s"(NF>1?FS:RS),$NF;while(--NF)}') > /var/lib/bluetooth/board-address
+            chown root:root /var/lib/bluetooth/board-address
+            chmod 644 /var/lib/bluetooth/board-address
+            exit 0
         else
             echo "Failed to get bluetooth address."
             exit 1
