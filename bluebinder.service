@@ -7,6 +7,7 @@ Before=bluetooth.service
 Type=notify
 ExecStartPre=/usr/bin/droid/bluebinder_wait.sh
 ExecStart=/usr/sbin/bluebinder
+ExecStartPost=/usr/bin/droid/bluebinder_post.sh
 Restart=always
 TimeoutStartSec=60
 # Sandboxing

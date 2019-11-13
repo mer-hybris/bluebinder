@@ -11,6 +11,7 @@ Source:         %{name}-%{version}.tar.bz2
 BuildRequires:  libgbinder-devel >= 1.0.7
 BuildRequires:  pkgconfig(bluez5)
 BuildRequires:  pkgconfig(libsystemd)
+Requires:       gawk
 Requires:       bluez5
 Requires:       /usr/bin/getprop
 
@@ -33,6 +34,7 @@ cp bluebinder.service $RPM_BUILD_ROOT/lib/systemd/system
 mkdir $RPM_BUILD_ROOT/lib/systemd/system/graphical.target.wants
 ln -s ../bluebinder.service $RPM_BUILD_ROOT/lib/systemd/system/graphical.target.wants/bluebinder.service
 mkdir -p $RPM_BUILD_ROOT/usr/bin/droid/
+cp bluebinder_post.sh $RPM_BUILD_ROOT/usr/bin/droid/
 cp bluebinder_wait.sh $RPM_BUILD_ROOT/usr/bin/droid/
 
 %clean
@@ -44,4 +46,5 @@ make clean
 /usr/sbin/bluebinder
 /lib/systemd/system/graphical.target.wants/bluebinder.service
 /lib/systemd/system/bluebinder.service
+/usr/bin/droid/bluebinder_post.sh
 /usr/bin/droid/bluebinder_wait.sh
