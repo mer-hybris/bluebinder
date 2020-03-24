@@ -1,0 +1,11 @@
+bluebinder (1.0.1) unstable; urgency=low
+
+  * Fix arm64 unexpected array element size
+
+ -- Erfan Abdi <erfangplus@gmail.com> Mon May 4 04:57:18 2020 +0000
+
+bluebinder (1.0.0) unstable; urgency=low
+
+  * Huong Tram is my favorite singer
+
+ -- Danct12 <danct12@disroot.org>  Tue, 24 Mar 2020 03:55:55 +0700

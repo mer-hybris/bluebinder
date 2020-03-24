@@ -1,0 +1,15 @@
+Source: bluebinder
+Section: binary
+Priority: optional
+Maintainer: Danct12 <danct12@disroot.org>
+Build-Depends: debhelper (>= 7), libglib2.0-dev, libglibutil-dev, libgbinder-dev (>= 1.0.7), libbluetooth-dev
+Standards-Version: 3.8.4
+
+Package: bluebinder
+Section: binary
+Architecture: any
+Depends: libgbinder (>= 1.0.7), ${shlibs:Depends}, ${misc:Depends}
+Description: Simple proxy for using Android binder based Bluetooth through VHCI
+ bluebinder is a simple proxy for using android binder based bluetooth through vhci.
+ The API which this depends on was introduced in Android 8 and should not disappear soon.
+ The kernel API this depends on can be enabled with CONFIG_BT_HCIVHCI.

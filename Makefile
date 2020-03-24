@@ -3,7 +3,7 @@
 CC ?= $(CROSS_COMPILE)gcc
 USE_SYSTEMD ?= 1
 
-DEPEND_LIBS = libgbinder glib-2.0
+DEPEND_LIBS = glib-2.0 libgbinder
 ifeq ($(USE_SYSTEMD),1)
 DEPEND_LIBS += libsystemd
 endif
@@ -18,5 +18,5 @@ install:
 	cp bluebinder $(DESTDIR)/usr/sbin
 
 clean:
-	rm bluebinder
+	if test -a "bluebinder"; then rm bluebinder; fi;
 
