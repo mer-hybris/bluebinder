@@ -72,6 +72,7 @@ struct proxy {
     int gio_channel_event_id;
 
     int binder_replies_pending;
+    gboolean init_failed;
 };
 
 void
@@ -348,6 +349,30 @@ binder_remote_died(
 }
 
 static
+gboolean
+binder_init_complete(
+    struct proxy* proxy)
+{
+    fprintf(stderr, "Binder interface initialized, opening virtual device\n");
+
+    proxy->host_fd = open_vhci(HCI_PRIMARY);
+    if (proxy->host_fd < 0) {
+        fprintf(stderr, "Unable to open virtual device\n");
+        return FALSE;
+    }
+
+    if (!setup_watch(proxy)) {
+        fprintf(stderr, "Unable to setup watch\n");
+        return FALSE;
+    }
+
+    if (proxy->init_failed && proxy->loop)
+        g_main_loop_quit(proxy->loop);
+
+    return TRUE;
+}
+
+static
 GBinderLocalReply*
 bluebinder_callbacks_transact(
     GBinderLocalObject* obj,
@@ -373,33 +398,23 @@ bluebinder_callbacks_transact(
 
             if (result != 0) {
                 fprintf(stderr, "Bluetooth binder service failed\n");
-                g_main_loop_quit(proxy->loop);
+                /* we need to tell BT service that we properly handled Status::INITIALIZATION_ERROR */
+                *status = GBINDER_STATUS_OK;
+                proxy->init_failed = TRUE;
+                return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
+            }
+
+            if (binder_init_complete(proxy)) {
+                proxy->init_failed = FALSE;
+                sd_notify(0, "READY=1");
+                *status = GBINDER_STATUS_OK;
+                return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
+            } else {
+                proxy->init_failed = TRUE;
                 *status = GBINDER_STATUS_FAILED;
                 return NULL;
             }
 
-            fprintf(stderr, "Binder interface initialized, opening virtual device\n");
-
-            proxy->host_fd = open_vhci(HCI_PRIMARY);
-            if (proxy->host_fd < 0) {
-                fprintf(stderr, "Unable to open virtual device\n");
-                g_main_loop_quit(proxy->loop);
-                *status = GBINDER_STATUS_FAILED;
-                return NULL;
-            }
-
-            if (!setup_watch(proxy)) {
-                fprintf(stderr, "Unable to setup watch\n");
-                g_main_loop_quit(proxy->loop);
-                *status = GBINDER_STATUS_FAILED;
-                return NULL;
-            }
-
-            sd_notify(0, "READY=1");
-
-            *status = GBINDER_STATUS_OK;
-
-            return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
         } else if (code == 2 || code == 3 || code == 4) {
             unsigned int count, elemsize;
             GBinderReader reader;
@@ -514,7 +529,8 @@ int main(int argc, char *argv[])
     death_id = gbinder_remote_object_add_death_handler
             (remote, binder_remote_died, &proxy);
 
-    g_main_loop_run(proxy.loop);
+    if (!proxy.init_failed)
+        g_main_loop_run(proxy.loop);
 
     g_main_loop_unref(proxy.loop);
 
