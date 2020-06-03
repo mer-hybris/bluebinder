@@ -1,9 +1,9 @@
 # TODO: this is a bit minimalistic isn't it?
 
-DESTDIR ?= /
+build: bluebinder
 
-build:
-	gcc -Wall -O3 -flto bluebinder.c `pkg-config --cflags libgbinder` `pkg-config --libs libgbinder` -lsystemd -o bluebinder
+bluebinder: bluebinder.c
+	gcc $(CFLAGS) -Wall -flto $^ `pkg-config --cflags --libs libgbinder glib-2.0 libsystemd` -o $@
 
 install:
 	mkdir -p $(DESTDIR)/usr/sbin
