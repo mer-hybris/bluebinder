@@ -223,7 +223,7 @@ process_packet:
     if (proxy->host_len < 1)
         return true;
 
-    switch (proxy->host_buf[0]) {
+    switch ((guint8)proxy->host_buf[0]) {
         case HCI_COMMAND_PKT:
             if (proxy->host_len < 1 + sizeof(*cmd_hdr))
                 return true;
