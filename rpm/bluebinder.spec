@@ -28,13 +28,13 @@ make %{?_smp_mflags}
 %install
 rm -rf $RPM_BUILD_ROOT
 make install DESTDIR=$RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT/lib/systemd/system
-cp bluebinder.service $RPM_BUILD_ROOT/lib/systemd/system
-mkdir $RPM_BUILD_ROOT/lib/systemd/system/graphical.target.wants
-ln -s ../bluebinder.service $RPM_BUILD_ROOT/lib/systemd/system/graphical.target.wants/bluebinder.service
-mkdir -p $RPM_BUILD_ROOT/usr/bin/droid/
-cp bluebinder_post.sh $RPM_BUILD_ROOT/usr/bin/droid/
-cp bluebinder_wait.sh $RPM_BUILD_ROOT/usr/bin/droid/
+mkdir -p $RPM_BUILD_ROOT%{_unitdir}
+cp bluebinder.service $RPM_BUILD_ROOT%{_unitdir}
+mkdir $RPM_BUILD_ROOT%{_unitdir}/graphical.target.wants
+ln -s ../bluebinder.service $RPM_BUILD_ROOT%{_unitdir}/graphical.target.wants/bluebinder.service
+mkdir -p $RPM_BUILD_ROOT%{_bindir}/droid/
+cp bluebinder_post.sh $RPM_BUILD_ROOT%{_bindir}/droid/
+cp bluebinder_wait.sh $RPM_BUILD_ROOT%{_bindir}/droid/
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -42,8 +42,8 @@ make clean
 
 %files
 %defattr(-,root,root,-)
-/usr/sbin/bluebinder
-/lib/systemd/system/graphical.target.wants/bluebinder.service
-/lib/systemd/system/bluebinder.service
-/usr/bin/droid/bluebinder_post.sh
-/usr/bin/droid/bluebinder_wait.sh
+%{_sbindir}/bluebinder
+%{_unitdir}/graphical.target.wants/bluebinder.service
+%{_unitdir}/bluebinder.service
+%{_bindir}/droid/bluebinder_post.sh
+%{_bindir}/droid/bluebinder_wait.sh
