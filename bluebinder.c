@@ -39,7 +39,9 @@
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/hci.h>
 
+#if USE_SYSTEMD
 #include <systemd/sd-daemon.h>
+#endif
 
 #include <gbinder.h>
 
@@ -406,7 +408,9 @@ bluebinder_callbacks_transact(
 
             if (binder_init_complete(proxy)) {
                 proxy->init_failed = FALSE;
+#if USE_SYSTEMD
                 sd_notify(0, "READY=1");
+#endif
                 *status = GBINDER_STATUS_OK;
                 return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
             } else {
@@ -574,9 +578,11 @@ unref:
 
     close(proxy.host_fd);
 
+#if USE_SYSTEMD
     sd_notify(0,
         "STATUS=Exiting.\n"
         "ERRNO=19");
+#endif
 
     return err;
 }
