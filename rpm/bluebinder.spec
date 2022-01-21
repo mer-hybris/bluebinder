@@ -8,7 +8,7 @@ URL:            https://github.com/mer-hybris/bluebinder
 Source:         %{name}-%{version}.tar.bz2
 
 BuildRequires:  pkgconfig(libgbinder) >= 1.0.7
-BuildRequires:  pkgconfig(bluez5)
+BuildRequires:  pkgconfig(bluez)
 BuildRequires:  pkgconfig(libsystemd)
 Requires:       gawk
 Requires:       bluez5
@@ -23,7 +23,7 @@ The kernel API this depends on can be enabled with CONFIG_BT_HCIVHCI.
 %setup -q -n %{name}-%{version}
 
 %build
-make %{?_smp_mflags}
+%make_build
 
 %install
 rm -rf $RPM_BUILD_ROOT
