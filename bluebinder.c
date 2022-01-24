@@ -5,7 +5,9 @@
  *
  *  Contact: <franz.haider@jolla.com>
  *
- *  Copyright (C) 2018       Jolla Ltd.
+ *  Copyright (C) 2018-2022  Jolla Ltd.
+ *
+ *  Based on bluez5/tools/btproxy.c:
  *  Copyright (C) 2011-2012  Intel Corporation
  *  Copyright (C) 2004-2010  Marcel Holtmann <marcel@holtmann.org>
  *
