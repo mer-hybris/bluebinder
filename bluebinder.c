@@ -79,7 +79,6 @@
 // immediately before anything else for example turning bluetooth on/off can interfere.
 // but it still must be lower than the wait packet processed priority.
 #define PRIORITY_PROCESS_PACKETS_ONCE (G_PRIORITY_DEFAULT + 2)
-// The following two are the same since they are interleaved in the setup procedure.
 #define PRIORITY_HOST_READ_PACKETS (G_PRIORITY_DEFAULT + 3) // HAL -> vhci
 #define PRIORITY_CHECK_BT_STATE (G_PRIORITY_DEFAULT + 4)
 // This one is to be executed after the setup procedure to potentially turn bluetooth off
@@ -134,8 +133,6 @@ struct proxy {
     GBinderRemoteObject *remote;
     GBinderServiceManager *sm;
 
-    bool bluetooth_on;
-    bool turn_off_bt_after_setup;
     bool bluetooth_hal_initialized;
 
     int death_id;
@@ -257,7 +254,7 @@ configure_bt(
     int status = 0;
     bool fail = FALSE;
 
-    if (bluetooth_on && !proxy->bluetooth_on) {
+    if (bluetooth_on) {
         GBinderRemoteReply *reply;
         GBinderLocalRequest *initialize_request;
 
@@ -271,14 +268,14 @@ configure_bt(
         reply = gbinder_client_transact_sync_reply
             (proxy->binder_client, INITIALIZE, initialize_request, &status);
 
-        if (status != GBINDER_STATUS_OK || !reply) {
+        if (status != GBINDER_STATUS_OK) {
             fprintf(stderr, "ERROR: init reply: %p, %d\n", reply, status);
             fail = TRUE;
         }
 
         gbinder_remote_reply_unref(reply);
         gbinder_local_request_unref(initialize_request);
-    } else if (!bluetooth_on && proxy->bluetooth_on) {
+    } else {
         GBinderRemoteReply *reply;
 
         fprintf(stderr, "Turning bluetooth off\n");
@@ -287,15 +284,12 @@ configure_bt(
         reply = gbinder_client_transact_sync_reply
             (proxy->binder_client, CLOSE, NULL, &status);
 
-        if (status != GBINDER_STATUS_OK || !reply) {
+        if (status != GBINDER_STATUS_OK) {
             fprintf(stderr, "ERROR: close reply: %p, %d\n", reply, status);
             fail = TRUE;
         }
         gbinder_remote_reply_unref(reply);
-    } else {
-        fprintf(stderr, "WARNING: inconsistent bluetooth state: %d %d\n", proxy->bluetooth_on, bluetooth_on);
     }
-    proxy->bluetooth_on = bluetooth_on;
 
     if (fail) {
         binder_remote_died(NULL, proxy);
@@ -520,8 +514,7 @@ binder_remote_died(
 
     proxy->binder_client = gbinder_client_new(proxy->remote, BINDER_BLUETOOTH_SERVICE_IFACE);
 
-    proxy->bluetooth_on = !proxy->bluetooth_on;
-    configure_bt(proxy, !proxy->bluetooth_on);
+    configure_bt(proxy, FALSE);
 
     return;
 
@@ -626,18 +619,6 @@ exit:
 }
 
 gboolean
-turn_off_bt_after_startup(
-    gpointer user_data)
-{
-    struct proxy *proxy = user_data;
-    configure_bt(proxy, FALSE);
-#if USE_SYSTEMD
-    sd_notify(0, "READY=1");
-#endif
-    return G_SOURCE_REMOVE;
-}
-
-gboolean
 turn_on_bt_after_startup(
     gpointer user_data)
 {
@@ -702,17 +683,12 @@ check_bt_state(
     bdaddr_t zero_bdaddr;
     memset(&zero_bdaddr, 0, sizeof(bdaddr_t));
 
-    if (hci_test_bit(HCI_UP, &di.flags) && !hci_test_bit(HCI_INIT, &di.flags)
+    if ((hci_test_bit(HCI_UP, &di.flags) && !hci_test_bit(HCI_INIT, &di.flags))
         || (!hci_test_bit(HCI_UP, &di.flags) && memcmp(&zero_bdaddr, &di.bdaddr, sizeof(bdaddr_t) != 0))) {
         fprintf(stderr, "successfully initialized bluetooth\n");
-        if (proxy->turn_off_bt_after_setup) {
-            g_idle_add_full(PRIORITY_CHECK_BT_STATE_DONE, turn_off_bt_after_startup, proxy, NULL);
-            proxy->turn_off_bt_after_setup = FALSE;
-        } else {
 #if USE_SYSTEMD
-            sd_notify(0, "READY=1");
+        sd_notify(0, "READY=1");
 #endif
-        }
         return G_SOURCE_REMOVE;
     }
 
@@ -808,6 +784,24 @@ bluebinder_callbacks_transact(
     }
 }
 
+gboolean
+turn_off_bt(
+    gpointer user_data)
+{
+    struct proxy *proxy = user_data;
+    configure_bt(proxy, FALSE);
+    return G_SOURCE_REMOVE;
+}
+
+gboolean
+turn_on_bt(
+    gpointer user_data)
+{
+    struct proxy *proxy = user_data;
+    configure_bt(proxy, TRUE);
+    return G_SOURCE_REMOVE;
+}
+
 static
 gboolean
 rfkill_callback(
@@ -858,7 +852,11 @@ rfkill_callback(
     }
 
     if (bt_event) {
-        configure_bt(proxy, bluetooth_on);
+        if (bluetooth_on) {
+            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_on_bt, &proxy, NULL);
+        } else {
+            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_off_bt, &proxy, NULL);
+        }
     }
 
     return G_SOURCE_CONTINUE;
@@ -910,8 +908,6 @@ int main(int argc, char *argv[])
     proxy.death_id = gbinder_remote_object_add_death_handler
             (proxy.remote, binder_remote_died, &proxy);
 
-    proxy.bluetooth_on = FALSE;
-
     if (setup_vhci(&proxy)) {
         gboolean bluetooth_on = FALSE;
 
@@ -944,6 +940,10 @@ int main(int argc, char *argv[])
             }
         }
 
+
+        g_idle_add_full(PRIORITY_CHECK_BT_STATE, turn_on_bt_after_startup, &proxy, NULL);
+        g_idle_add_full(PRIORITY_CHECK_BT_STATE, check_bt_state, &proxy, NULL);
+
         proxy.rfkill_watch_id = g_io_add_watch_full(proxy.rfkill_channel,
                                     PRIORITY_RFKILL_CHANNEL,
                                     (GIOCondition)(G_IO_IN | G_IO_HUP | G_IO_ERR),
@@ -951,18 +951,12 @@ int main(int argc, char *argv[])
                                     NULL);
         g_io_channel_set_flags(proxy.rfkill_channel, G_IO_FLAG_NONBLOCK, NULL);
 
-        // We need to turn on bluetooth in order to complete the bt setup.
-        proxy.bluetooth_on = FALSE;
-
-        g_idle_add_full(PRIORITY_CHECK_BT_STATE, turn_on_bt_after_startup, &proxy, NULL);
-        g_idle_add_full(PRIORITY_CHECK_BT_STATE, check_bt_state, &proxy, NULL);
-
         proxy.loop = g_main_loop_new(NULL, FALSE);
         g_main_loop_run(proxy.loop);
         g_main_loop_unref(proxy.loop);
     }
 
-    if (proxy.bluetooth_on) {
+    if (proxy.bluetooth_hal_initialized) {
         fprintf(stderr, "Turning bluetooth off on stop.\n");
         reply = gbinder_client_transact_sync_reply
             (proxy.binder_client, CLOSE, NULL, &status);
@@ -970,6 +964,7 @@ int main(int argc, char *argv[])
         if (status != GBINDER_STATUS_OK) {
             fprintf(stderr, "ERROR: close reply: %p, %d\n", reply, status);
         }
+
         gbinder_client_unref(proxy.binder_client);
         proxy.binder_client = NULL;
     }
