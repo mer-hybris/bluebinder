@@ -684,7 +684,7 @@ check_bt_state(
     memset(&zero_bdaddr, 0, sizeof(bdaddr_t));
 
     if ((hci_test_bit(HCI_UP, &di.flags) && !hci_test_bit(HCI_INIT, &di.flags))
-        || (!hci_test_bit(HCI_UP, &di.flags) && memcmp(&zero_bdaddr, &di.bdaddr, sizeof(bdaddr_t) != 0))) {
+        || (!hci_test_bit(HCI_RUNNING, &di.flags) && (memcmp(&zero_bdaddr, &di.bdaddr, sizeof(bdaddr_t)) != 0))) {
         fprintf(stderr, "successfully initialized bluetooth\n");
 #if USE_SYSTEMD
         sd_notify(0, "READY=1");
