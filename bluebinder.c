@@ -6,6 +6,7 @@
  *  Contact: <franz.haider@jolla.com>
  *
  *  Copyright (C) 2018-2022  Jolla Ltd.
+ *  Copyright (C) 2022 Open Mobile Platform LLC.
  *
  *  Based on bluez5/tools/btproxy.c:
  *  Copyright (C) 2011-2012  Intel Corporation
@@ -853,9 +854,9 @@ rfkill_callback(
 
     if (bt_event) {
         if (bluetooth_on) {
-            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_on_bt, &proxy, NULL);
+            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_on_bt, proxy, NULL);
         } else {
-            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_off_bt, &proxy, NULL);
+            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_off_bt, proxy, NULL);
         }
     }
 
