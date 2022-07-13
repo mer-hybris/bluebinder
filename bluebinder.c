@@ -784,24 +784,6 @@ bluebinder_callbacks_transact(
     }
 }
 
-gboolean
-turn_off_bt(
-    gpointer user_data)
-{
-    struct proxy *proxy = user_data;
-    configure_bt(proxy, FALSE);
-    return G_SOURCE_REMOVE;
-}
-
-gboolean
-turn_on_bt(
-    gpointer user_data)
-{
-    struct proxy *proxy = user_data;
-    configure_bt(proxy, TRUE);
-    return G_SOURCE_REMOVE;
-}
-
 static
 gboolean
 rfkill_callback(
@@ -852,11 +834,7 @@ rfkill_callback(
     }
 
     if (bt_event) {
-        if (bluetooth_on) {
-            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_on_bt, &proxy, NULL);
-        } else {
-            g_idle_add_full(PRIORITY_RFKILL_CHANNEL, turn_off_bt, &proxy, NULL);
-        }
+        configure_bt(proxy, bluetooth_on);
     }
 
     return G_SOURCE_CONTINUE;
