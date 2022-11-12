@@ -14,9 +14,15 @@ mkdir -p /var/lib/bluetooth
 
 # Getting address file from properties
 bt_addr_file=$(/usr/bin/getprop ro.bt.bdaddr_path)
+bt_addr_vendor_file=$(/usr/bin/getprop ro.vendor.bt.bdaddr_path)
 if [ "$bt_addr_file" != "" ]; then
     if ! cp $bt_addr_file /var/lib/bluetooth/board-address; then
         echo "Failed to copy $bt_addr_file."
+        exit 1
+    fi
+elif [ "$bt_addr_vendor_file" != "" ]; then
+    if ! cp $bt_addr_vendor_file /var/lib/bluetooth/board-address; then
+        echo "Failed to copy $bt_addr_vendor_file."
         exit 1
     fi
 elif [ "$(getprop persist.vendor.service.bdroid.bdaddr)" != "" ]; then
