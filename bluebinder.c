@@ -685,7 +685,7 @@ check_bt_state(
 
     if ((hci_test_bit(HCI_UP, &di.flags) && !hci_test_bit(HCI_INIT, &di.flags))
         || (!hci_test_bit(HCI_RUNNING, &di.flags) && (memcmp(&zero_bdaddr, &di.bdaddr, sizeof(bdaddr_t)) != 0))) {
-        fprintf(stderr, "successfully initialized bluetooth\n");
+        fprintf(stderr, "Successfully initialized vhci bluetooth\n");
 #if USE_SYSTEMD
         sd_notify(0, "READY=1");
 #endif
@@ -715,8 +715,18 @@ bluebinder_callbacks_transact(
     int* status,
     void* user_data)
 {
+    static unsigned long long local_features_mask = 0;
+    static int env_gotten = 0;
     struct proxy *proxy = user_data;
     const char* iface = gbinder_remote_request_interface(req);
+
+    if (!env_gotten) {
+        const char *value = getenv("BLUEBINDER_LOCAL_FEATURES_MASK");
+        if (value)
+            local_features_mask = strtoull(value, 0, 16);
+        fprintf(stderr, "Got BLUEBINDER_LOCAL_FEATURES_MASK 0x%llx\n", local_features_mask);
+        env_gotten = 1;
+    }
 
     if (flags & GBINDER_TX_FLAG_ONEWAY) {
         fprintf(stderr, "Expected non-oneway transaction\n");
@@ -734,7 +744,7 @@ bluebinder_callbacks_transact(
                 /* we need to tell BT service that we properly handled Status::INITIALIZATION_ERROR */
             } else {
                 proxy->bluetooth_hal_initialized = TRUE;
-                fprintf(stderr, "Bluetooth initialized successfully\n");
+                fprintf(stderr, "Bluetooth binder initialized successfully\n");
                 g_idle_add_full(PRIORITY_PROCESS_PACKETS_ONCE, process_packets_once, proxy, NULL);
             }
 
@@ -763,6 +773,21 @@ bluebinder_callbacks_transact(
             packet[0] = (code == HCI_EVENT_RECEIVED) ? HCI_EVENT_PKT :
                         (code == ACL_DATA_RECEIVED) ? HCI_ACLDATA_PKT :
                         (code == SCO_DATA_RECEIVED) ? HCI_SCODATA_PKT : /* unreachable */ 0xFF;
+
+            if (local_features_mask) {
+                // Command complete
+                if (packet[0] == HCI_EVENT_PKT && count >= 14 && packet[1] == 0x0e) {
+                    // HCI_Read_Local_Supported_Features
+                    if (((packet[5] << 8) | packet[4]) == 0x1003) {
+                        for (int l = 0; l < 8; l++) {
+                            uint8_t data_in = packet[7+l];
+                            uint8_t mask = local_features_mask >> (7 - l) * 8;
+                            uint8_t data_out = data_in & ~mask;
+                            packet[7+l] = data_out;
+                        }
+                    }
+                }
+            }
 
             dev_write_packet(proxy, packet, count + 1);
 
