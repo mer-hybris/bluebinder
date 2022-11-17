@@ -5,6 +5,7 @@ Before=bluetooth.service
 
 [Service]
 Type=notify
+EnvironmentFile=-/var/lib/environment/bluebinder/*.conf
 ExecStartPre=/usr/bin/droid/bluebinder_wait.sh
 ExecStart=/usr/sbin/bluebinder
 ExecStartPost=/usr/bin/droid/bluebinder_post.sh
