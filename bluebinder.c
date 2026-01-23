@@ -68,6 +68,9 @@
 #define BINDER_BLUETOOTH_SERVICE_IFACE_CALLBACKS "android.hardware.bluetooth@1.0::IBluetoothHciCallbacks"
 #define BINDER_BLUETOOTH_SERVICE_SLOT "default"
 
+#define BINDER_BLUETOOTH_AIDL_SERVICE_IFACE "android.hardware.bluetooth.IBluetoothHci"
+#define BINDER_BLUETOOTH_AIDL_SERVICE_IFACE_CALLBACKS "android.hardware.bluetooth.IBluetoothHciCallbacks"
+
 // Priority for wait packet processed must be higher than the gio channel (PRIORITY_HOST_READ_PACKETS)
 // otherwise we might process a second command
 // before the first one was accepted.
@@ -91,7 +94,7 @@
 // are completely handled.
 #define PRIORITY_RFKILL_CHANNEL (G_PRIORITY_DEFAULT + 6)
 
-enum bluetooth_codes {
+enum bluetooth_hidl_codes {
     INITIALIZE = GBINDER_FIRST_CALL_TRANSACTION,
     SEND_HCI_COMMAND,
     SEND_ACL_DATA,
@@ -99,11 +102,92 @@ enum bluetooth_codes {
     CLOSE,
 };
 
-enum bluetooth_callback_codes {
+enum bluetooth_aidl_codes {
+    AIDL_CLOSE = GBINDER_FIRST_CALL_TRANSACTION,
+    AIDL_INITIALIZE,
+    AIDL_SEND_ACL_DATA,
+    AIDL_SEND_HCI_COMMAND,
+    AIDL_SEND_ISO_DATA,
+    AIDL_SEND_SCO_DATA,
+};
+
+enum bluetooth_hidl_callback_codes {
     INITIALIZATION_COMPLETE = GBINDER_FIRST_CALL_TRANSACTION,
     HCI_EVENT_RECEIVED,
     ACL_DATA_RECEIVED,
     SCO_DATA_RECEIVED,
+};
+
+enum bluetooth_aidl_callback_codes {
+    AIDL_ACL_DATA_RECEIVED = GBINDER_FIRST_CALL_TRANSACTION,
+    AIDL_HCI_EVENT_RECEIVED,
+    AIDL_INITIALIZATION_COMPLETE,
+    AIDL_ISO_DATA_RECEIVED,
+    AIDL_SCO_DATA_RECEIVED,
+};
+
+enum binder_rpc_protocol {
+    BINDER_RPC_PROTOCOL_HIDL = 0,
+    BINDER_RPC_PROTOCOL_AIDL
+};
+
+struct bluetooth_hal_protocol {
+    const char *service_name;
+    const char *service_iface;
+    const char *callback_iface;
+    const char *service_slot;
+    enum binder_rpc_protocol rpc_protocol;
+
+    int tx_initialize;
+    int tx_close;
+    int tx_send_cmd;
+    int tx_send_acl;
+    int tx_send_sco;
+    int tx_send_iso;
+
+    int rx_init_complete;
+    int rx_hci_event;
+    int rx_acl_data;
+    int rx_sco_data;
+    int rx_iso_data;
+};
+
+static const struct bluetooth_hal_protocol protocol_hidl = {
+    .service_name = BINDER_BLUETOOTH_SERVICE_IFACE,
+    .service_iface = BINDER_BLUETOOTH_SERVICE_IFACE,
+    .callback_iface = BINDER_BLUETOOTH_SERVICE_IFACE_CALLBACKS,
+    .service_slot = BINDER_BLUETOOTH_SERVICE_SLOT,
+    .rpc_protocol = BINDER_RPC_PROTOCOL_HIDL,
+    .tx_initialize = INITIALIZE,
+    .tx_close = CLOSE,
+    .tx_send_cmd = SEND_HCI_COMMAND,
+    .tx_send_acl = SEND_ACL_DATA,
+    .tx_send_sco = SEND_SCO_DATA,
+    .tx_send_iso = -1,
+    .rx_init_complete = INITIALIZATION_COMPLETE,
+    .rx_hci_event = HCI_EVENT_RECEIVED,
+    .rx_acl_data = ACL_DATA_RECEIVED,
+    .rx_sco_data = SCO_DATA_RECEIVED,
+    .rx_iso_data = -1,
+};
+
+static const struct bluetooth_hal_protocol protocol_aidl = {
+    .service_name = BINDER_BLUETOOTH_AIDL_SERVICE_IFACE,
+    .service_iface = BINDER_BLUETOOTH_AIDL_SERVICE_IFACE,
+    .callback_iface = BINDER_BLUETOOTH_AIDL_SERVICE_IFACE_CALLBACKS,
+    .service_slot = BINDER_BLUETOOTH_SERVICE_SLOT,
+    .rpc_protocol = BINDER_RPC_PROTOCOL_AIDL,
+    .tx_initialize = AIDL_INITIALIZE,
+    .tx_close = AIDL_CLOSE,
+    .tx_send_cmd = AIDL_SEND_HCI_COMMAND,
+    .tx_send_acl = AIDL_SEND_ACL_DATA,
+    .tx_send_sco = AIDL_SEND_SCO_DATA,
+    .tx_send_iso = AIDL_SEND_ISO_DATA,
+    .rx_init_complete = AIDL_INITIALIZATION_COMPLETE,
+    .rx_hci_event = AIDL_HCI_EVENT_RECEIVED,
+    .rx_acl_data = AIDL_ACL_DATA_RECEIVED,
+    .rx_sco_data = AIDL_SCO_DATA_RECEIVED,
+    .rx_iso_data = AIDL_ISO_DATA_RECEIVED,
 };
 
 struct pending_packet {
@@ -132,6 +216,7 @@ struct proxy {
     GBinderLocalObject *local_callbacks_object;
     GBinderRemoteObject *remote;
     GBinderServiceManager *sm;
+    const struct bluetooth_hal_protocol *protocol;
 
     bool bluetooth_hal_initialized;
 
@@ -186,6 +271,8 @@ host_write_packet(
 {
     GBinderLocalRequest *local_request = NULL;
     GBinderWriter writer;
+    uint8_t packet_type = ((uint8_t*)buf)[0];
+    int tx_code = -1;
 
     local_request = gbinder_client_new_request(proxy->binder_client);
     if (!local_request) {
@@ -195,21 +282,32 @@ host_write_packet(
     }
 
     gbinder_local_request_init_writer(local_request, &writer);
+
     // data, without the package type.
-    gbinder_writer_append_hidl_vec(&writer, (void*)((char*)buf + 1), len - 1, sizeof(uint8_t));
+    if (proxy->protocol->rpc_protocol == BINDER_RPC_PROTOCOL_AIDL) {
+        gbinder_writer_append_byte_array(&writer, (void*)((char*)buf + 1), len - 1);
+    } else {
+        gbinder_writer_append_hidl_vec(&writer, (void*)((char*)buf + 1), len - 1, sizeof(uint8_t));
+    }
 
     proxy->binder_replies_pending++;
     g_idle_add_full(PRIORITY_WAIT_PACKET_PROCESSED, waiting_for_binder_reply, proxy, NULL);
 
-    if (((uint8_t*)buf)[0] == HCI_COMMAND_PKT) {
-        gbinder_client_transact(proxy->binder_client, SEND_HCI_COMMAND, 0, local_request, handle_binder_reply, NULL, proxy);
-    } else if (((uint8_t*)buf)[0] == HCI_ACLDATA_PKT) {
-        gbinder_client_transact(proxy->binder_client, SEND_ACL_DATA, 0,  local_request, handle_binder_reply, NULL, proxy);
-    } else if (((uint8_t*)buf)[0] == HCI_SCODATA_PKT) {
-        gbinder_client_transact(proxy->binder_client, SEND_SCO_DATA, 0,  local_request, handle_binder_reply, NULL, proxy);
+    if (packet_type == HCI_COMMAND_PKT) {
+        tx_code = proxy->protocol->tx_send_cmd;
+    } else if (packet_type == HCI_ACLDATA_PKT) {
+        tx_code = proxy->protocol->tx_send_acl;
+    } else if (packet_type == HCI_SCODATA_PKT) {
+        tx_code = proxy->protocol->tx_send_sco;
+    } else if (packet_type == HCI_ISODATA_PKT) {
+        tx_code = proxy->protocol->tx_send_iso;
     } else {
         fprintf(stderr, "Received incorrect packet type from HCI client.\n");
         g_main_loop_quit(proxy->loop);
+    }
+
+    if (tx_code != -1) {
+        gbinder_client_transact(proxy->binder_client, tx_code, 0, local_request, handle_binder_reply, NULL, proxy);
     }
 
     gbinder_local_request_unref(local_request);
@@ -265,8 +363,8 @@ configure_bt(
         gbinder_local_request_append_local_object
             (initialize_request, proxy->local_callbacks_object);
 
-        reply = gbinder_client_transact_sync_reply
-            (proxy->binder_client, INITIALIZE, initialize_request, &status);
+        reply = gbinder_client_transact_sync_reply(proxy->binder_client,
+            proxy->protocol->tx_initialize, initialize_request, &status);
 
         if (status != GBINDER_STATUS_OK) {
             fprintf(stderr, "ERROR: init reply: %p, %d\n", reply, status);
@@ -281,8 +379,8 @@ configure_bt(
         fprintf(stderr, "Turning bluetooth off\n");
         proxy->bluetooth_hal_initialized = FALSE;
 
-        reply = gbinder_client_transact_sync_reply
-            (proxy->binder_client, CLOSE, NULL, &status);
+        reply = gbinder_client_transact_sync_reply(proxy->binder_client,
+            proxy->protocol->tx_close, NULL, &status);
 
         if (status != GBINDER_STATUS_OK) {
             fprintf(stderr, "ERROR: close reply: %p, %d\n", reply, status);
@@ -483,8 +581,7 @@ binder_remote_died(
     void* user_data)
 {
     struct proxy *proxy = user_data;
-    char *fqname =
-        (BINDER_BLUETOOTH_SERVICE_IFACE "/" BINDER_BLUETOOTH_SERVICE_SLOT);
+    char *fqname = NULL;
     int status;
 
     fprintf(stderr, "Remote has died, trying to reconnect...\n");
@@ -493,8 +590,9 @@ binder_remote_died(
     proxy->binder_client = NULL;
 
     gbinder_remote_object_remove_handler(proxy->remote, proxy->death_id);
-
     gbinder_remote_object_unref(proxy->remote);
+
+    asprintf(&fqname, "%s/%s", proxy->protocol->service_name, proxy->protocol->service_slot);
 
     int retries = 0;
     while (retries < 10) {
@@ -510,9 +608,12 @@ binder_remote_died(
         sleep(1);
         retries++;
     }
+
+    free(fqname);
+
     if (!proxy->remote) goto failed;
 
-    proxy->binder_client = gbinder_client_new(proxy->remote, BINDER_BLUETOOTH_SERVICE_IFACE);
+    proxy->binder_client = gbinder_client_new(proxy->remote, proxy->protocol->service_iface);
 
     configure_bt(proxy, FALSE);
 
@@ -733,8 +834,15 @@ bluebinder_callbacks_transact(
         return NULL;
     }
 
-    if (!g_strcmp0(iface, BINDER_BLUETOOTH_SERVICE_IFACE_CALLBACKS)) {
-        if (code == INITIALIZATION_COMPLETE) {
+    if (!g_strcmp0(iface, proxy->protocol->callback_iface)) {
+
+        gboolean is_init_complete = (code == proxy->protocol->rx_init_complete);
+        gboolean is_data_received = (code == proxy->protocol->rx_hci_event ||
+                                     code == proxy->protocol->rx_acl_data ||
+                                     code == proxy->protocol->rx_sco_data ||
+                                     (proxy->protocol->rx_iso_data != -1 && code == proxy->protocol->rx_iso_data));
+
+        if (is_init_complete) {
             int result = 0;
 
             gbinder_remote_request_read_int32(req, &result);
@@ -750,7 +858,7 @@ bluebinder_callbacks_transact(
 
             *status = GBINDER_STATUS_OK;
             return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
-        } else if (code == HCI_EVENT_RECEIVED || code == ACL_DATA_RECEIVED || code == SCO_DATA_RECEIVED) {
+        } else if (is_data_received) {
             gsize count, elemsize;
             GBinderReader reader;
             const uint8_t *vec;
@@ -758,21 +866,40 @@ bluebinder_callbacks_transact(
 
             gbinder_remote_request_init_reader(req, &reader);
 
-            vec = gbinder_reader_read_hidl_vec(&reader, &count, &elemsize);
-            if (elemsize != 1) {
-                fprintf(stderr, "Received unexpected array element size, expected sizeof(uint8_t)\n");
-                g_main_loop_quit(proxy->loop);
-                *status = GBINDER_STATUS_FAILED;
-                return NULL;
+            if (proxy->protocol->rpc_protocol == BINDER_RPC_PROTOCOL_AIDL) {
+                vec = gbinder_reader_read_byte_array(&reader, &count);
+                if (!vec) {
+                    fprintf(stderr, "Failed to read byte array from AIDL transaction\n");
+                    g_main_loop_quit(proxy->loop);
+                    *status = GBINDER_STATUS_FAILED;
+                    return NULL;
+                }
+            } else {
+                vec = gbinder_reader_read_hidl_vec(&reader, &count, &elemsize);
+                if (elemsize != 1) {
+                    fprintf(stderr, "Received unexpected array element size, expected sizeof(uint8_t)\n");
+                    g_main_loop_quit(proxy->loop);
+                    *status = GBINDER_STATUS_FAILED;
+                    return NULL;
+                }
             }
 
             // first byte will be the type
             packet = malloc(count + 1);
             memcpy(packet + 1, vec, count);
 
-            packet[0] = (code == HCI_EVENT_RECEIVED) ? HCI_EVENT_PKT :
-                        (code == ACL_DATA_RECEIVED) ? HCI_ACLDATA_PKT :
-                        (code == SCO_DATA_RECEIVED) ? HCI_SCODATA_PKT : /* unreachable */ 0xFF;
+            if (code == proxy->protocol->rx_hci_event) {
+                packet[0] = HCI_EVENT_PKT;
+            } else if (code == proxy->protocol->rx_acl_data) {
+                packet[0] = HCI_ACLDATA_PKT;
+            } else if (code == proxy->protocol->rx_sco_data) {
+                packet[0] = HCI_SCODATA_PKT;
+            } else if (code == proxy->protocol->rx_iso_data) {
+                packet[0] = HCI_ISODATA_PKT;
+            } else {
+                /* unknown? */
+                packet[0] = 0xFF;
+            }
 
             if (local_features_mask) {
                 // Command complete
@@ -873,8 +1000,7 @@ void stop_watch(struct proxy *proxy) {
 
 int main(int argc, char *argv[])
 {
-    char *fqname =
-        (BINDER_BLUETOOTH_SERVICE_IFACE "/" BINDER_BLUETOOTH_SERVICE_SLOT);
+    char *fqname = NULL;
     struct proxy proxy;
     int status = 0;
     int err = 0;
@@ -886,12 +1012,36 @@ int main(int argc, char *argv[])
 
     memset(&proxy, 0, sizeof(struct proxy));
 
-    proxy.sm = gbinder_servicemanager_new(BINDER_BLUETOOTH_SERVICE_DEVICE);
+    proxy.sm = gbinder_servicemanager_new(GBINDER_DEFAULT_BINDER);
+    if (!proxy.sm) {
+        fprintf(stderr, "Failed to connect to %s servicemanager\n", GBINDER_DEFAULT_BINDER);
+        return 1;
+    }
 
+    fqname = g_strdup_printf("%s/%s", protocol_aidl.service_name, protocol_aidl.service_slot);
     proxy.remote = gbinder_remote_object_ref
         (gbinder_servicemanager_get_service_sync(proxy.sm, fqname, &status));
+    g_free(fqname);
 
-    proxy.binder_client = gbinder_client_new(proxy.remote, BINDER_BLUETOOTH_SERVICE_IFACE);
+    if (proxy.remote) {
+        printf("Connected to AIDL bluetooth service\n");
+        proxy.protocol = &protocol_aidl;
+        proxy.binder_client = gbinder_client_new(proxy.remote, protocol_aidl.service_iface);
+    } else {
+        gbinder_servicemanager_unref(proxy.sm);
+        proxy.sm = gbinder_servicemanager_new(BINDER_BLUETOOTH_SERVICE_DEVICE);
+
+        fqname = g_strdup_printf("%s/%s", protocol_hidl.service_name, protocol_hidl.service_slot);
+        proxy.remote = gbinder_remote_object_ref
+            (gbinder_servicemanager_get_service_sync(proxy.sm, fqname, &status));
+        g_free(fqname);
+
+        if (proxy.remote) {
+            printf("Connected to HIDL bluetooth service\n");
+            proxy.protocol = &protocol_hidl;
+            proxy.binder_client = gbinder_client_new(proxy.remote, protocol_hidl.service_iface);
+        }
+    }
 
     if (!proxy.binder_client) {
         fprintf(stderr, "Failed to connect to bluetooth binder service\n");
@@ -901,9 +1051,13 @@ int main(int argc, char *argv[])
 
     proxy.local_callbacks_object = gbinder_servicemanager_new_local_object(
         proxy.sm,
-        BINDER_BLUETOOTH_SERVICE_IFACE_CALLBACKS,
+        proxy.protocol->callback_iface,
         bluebinder_callbacks_transact,
         &proxy);
+
+    if (proxy.protocol->rpc_protocol == BINDER_RPC_PROTOCOL_AIDL) {
+        gbinder_local_object_set_stability(proxy.local_callbacks_object, GBINDER_STABILITY_VINTF);
+    }
 
     sigtrm = g_unix_signal_add(SIGTERM, signal_callback, &proxy);
     sigint = g_unix_signal_add(SIGINT, signal_callback, &proxy);
@@ -962,7 +1116,7 @@ int main(int argc, char *argv[])
     if (proxy.bluetooth_hal_initialized) {
         fprintf(stderr, "Turning bluetooth off on stop.\n");
         reply = gbinder_client_transact_sync_reply
-            (proxy.binder_client, CLOSE, NULL, &status);
+            (proxy.binder_client, proxy.protocol->tx_close, NULL, &status);
 
         if (status != GBINDER_STATUS_OK) {
             fprintf(stderr, "ERROR: close reply: %p, %d\n", reply, status);
