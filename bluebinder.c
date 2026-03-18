@@ -134,6 +134,21 @@ enum bluetooth_aidl_callback_codes {
     AIDL_SCO_DATA_RECEIVED,
 };
 
+enum bluetooth_hidl_status {
+    STATUS_SUCCESS,
+    STATUS_TRANSPORT_ERROR,
+    STATUS_INITIALIZATION_ERROR,
+    STATUS_UNKNOWN,
+};
+
+enum bluetooth_aidl_status {
+    AIDL_STATUS_SUCCESS,
+    AIDL_STATUS_ALREADY_INITIALIZED,
+    AIDL_STATUS_UNABLE_TO_OPEN_INTERFACE,
+    AIDL_STATUS_HARDWARE_INITIALIZATION_ERROR,
+    AIDL_STATUS_UNKNOWN,
+};
+
 enum binder_rpc_protocol {
     BINDER_RPC_PROTOCOL_HIDL = 0,
     BINDER_RPC_PROTOCOL_AIDL
@@ -860,10 +875,17 @@ bluebinder_callbacks_transact(
 
         if (is_init_complete) {
             int result = 0;
+            bool is_success = TRUE;
 
             gbinder_remote_request_read_int32(req, &result);
 
-            if (result != 0) {
+            if (proxy->protocol->rpc_protocol == BINDER_RPC_PROTOCOL_AIDL && result > AIDL_STATUS_ALREADY_INITIALIZED) {
+                is_success = FALSE;
+            } else if (proxy->protocol->rpc_protocol == BINDER_RPC_PROTOCOL_HIDL && result != STATUS_SUCCESS) {
+                is_success = FALSE;
+            }
+
+            if (!is_success) {
                 fprintf(stderr, "Bluetooth binder service failed\n");
                 /* we need to tell BT service that we properly handled Status::INITIALIZATION_ERROR */
             } else {
