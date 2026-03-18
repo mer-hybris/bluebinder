@@ -848,6 +848,7 @@ bluebinder_callbacks_transact(
     void* user_data)
 {
     static unsigned long long local_features_mask = 0;
+    static unsigned long long local_ext_features_page_2_mask = 0;
     static int env_gotten = 0;
     struct proxy *proxy = user_data;
     const char* iface = gbinder_remote_request_interface(req);
@@ -857,6 +858,10 @@ bluebinder_callbacks_transact(
         if (value)
             local_features_mask = strtoull(value, 0, 16);
         fprintf(stderr, "Got BLUEBINDER_LOCAL_FEATURES_MASK 0x%llx\n", local_features_mask);
+        const char *ext_value = getenv("BLUEBINDER_LOCAL_EXT_FEATURES_PAGE_2_MASK");
+        if (ext_value)
+            local_ext_features_page_2_mask = strtoull(ext_value, 0, 16);
+        fprintf(stderr, "Got BLUEBINDER_LOCAL_EXT_FEATURES_PAGE_2_MASK 0x%llx\n", local_ext_features_page_2_mask);
         env_gotten = 1;
     }
 
@@ -949,6 +954,20 @@ bluebinder_callbacks_transact(
                             uint8_t mask = local_features_mask >> (7 - l) * 8;
                             uint8_t data_out = data_in & ~mask;
                             packet[7+l] = data_out;
+                        }
+                    }
+                }
+            }
+            if (local_ext_features_page_2_mask) {
+                // Command complete
+                if (packet[0] == HCI_EVENT_PKT && count >= 16 && packet[1] == 0x0e) {
+                    // HCI_Read_Local_Extended_Features page 2
+                    if (((packet[5] << 8) | packet[4]) == 0x1004 && packet[7] == 0x02) {
+                        for (int l = 0; l < 8; l++) {
+                            uint8_t data_in = packet[9+l];
+                            uint8_t mask = local_ext_features_page_2_mask >> (7 - l) * 8;
+                            uint8_t data_out = data_in & ~mask;
+                            packet[9+l] = data_out;
                         }
                     }
                 }
