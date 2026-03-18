@@ -61,6 +61,14 @@
 #error "unknown byte order"
 #endif
 
+// For compatibility with old bluetooth/hci.h
+#ifndef HCI_ISO_HDR_SIZE
+typedef struct {
+    uint16_t handle;
+    uint16_t dlen;
+} __attribute__ ((packed)) hci_iso_hdr;
+#endif
+
 #define HCI_PRIMARY    0x00
 
 #define BINDER_BLUETOOTH_SERVICE_DEVICE "/dev/hwbinder"
@@ -454,6 +462,7 @@ process_packets(
     hci_command_hdr *cmd_hdr;
     hci_acl_hdr *acl_hdr;
     hci_sco_hdr *sco_hdr;
+    hci_iso_hdr *iso_hdr;
     uint16_t pktlen;
 
 process_packet:
@@ -482,6 +491,13 @@ process_packet:
 
             sco_hdr = (void *) (proxy->host_buf + 1);
             pktlen = 1 + sizeof(*sco_hdr) + sco_hdr->dlen;
+            break;
+        case HCI_ISODATA_PKT:
+            if (proxy->host_len < 1 + sizeof(*iso_hdr))
+                return G_SOURCE_CONTINUE;
+
+            iso_hdr = (void *) (proxy->host_buf + 1);
+            pktlen = 1 + sizeof(*iso_hdr) + iso_hdr->dlen;
             break;
         case 0xff:
             /* Notification packet from /dev/vhci - ignore */
