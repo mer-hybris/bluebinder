@@ -13,6 +13,7 @@ Restart=always
 TimeoutStartSec=60
 # Sandboxing
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+DeviceAllow=/dev/binder rw
 DeviceAllow=/dev/hwbinder rw
 DeviceAllow=/dev/vhci rw
 DeviceAllow=/dev/rfkill r
