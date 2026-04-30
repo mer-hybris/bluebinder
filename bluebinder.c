@@ -235,6 +235,9 @@ struct proxy {
     GIOChannel *rfkill_channel;
     int rfkill_watch_id;
     int own_hci_index;
+    int global_bt_rfkill_index;
+    bool bluetooth_powered;
+    bool bluetooth_powered_known;
 
     GBinderLocalObject *local_callbacks_object;
     GBinderRemoteObject *remote;
@@ -258,6 +261,65 @@ void
 binder_remote_died(
     GBinderRemoteObject* obj,
     void* user_data);
+
+static
+gboolean
+read_rfkill_name(
+    int idx,
+    char *name,
+    size_t size)
+{
+    char path[64];
+    FILE *file;
+
+    if (idx < 0 || !name || size < 2) {
+        return FALSE;
+    }
+
+    snprintf(path, sizeof(path), "/sys/class/rfkill/rfkill%d/name", idx);
+    file = fopen(path, "r");
+    if (!file) {
+        return FALSE;
+    }
+
+    if (!fgets(name, size, file)) {
+        fclose(file);
+        return FALSE;
+    }
+    fclose(file);
+
+    name[strcspn(name, "\n")] = '\0';
+
+    return TRUE;
+}
+
+static
+gboolean
+is_global_bt_rfkill_index(
+    struct proxy *proxy,
+    int idx)
+{
+    char name[32];
+
+    if (!proxy || idx < 0) {
+        return FALSE;
+    }
+
+    if (proxy->global_bt_rfkill_index >= 0) {
+        return proxy->global_bt_rfkill_index == idx;
+    }
+
+    if (!read_rfkill_name(idx, name, sizeof(name))) {
+        return FALSE;
+    }
+
+    if (strcmp(name, "bluetooth")) {
+        return FALSE;
+    }
+
+    proxy->global_bt_rfkill_index = idx;
+    return TRUE;
+}
 
 void
 handle_binder_reply(
@@ -380,6 +442,7 @@ configure_bt(
         GBinderLocalRequest *initialize_request;
 
         fprintf(stderr, "Turning bluetooth on\n");
+        proxy->bluetooth_hal_initialized = FALSE;
 
         initialize_request = gbinder_client_new_request(proxy->binder_client);
 
@@ -755,6 +818,8 @@ turn_on_bt_after_startup(
     gpointer user_data)
 {
     struct proxy *proxy = user_data;
+    proxy->bluetooth_powered_known = TRUE;
+    proxy->bluetooth_powered = TRUE;
     configure_bt(proxy, TRUE);
     return G_SOURCE_REMOVE;
 }
@@ -764,29 +829,16 @@ check_bt_state(
     gpointer user_data)
 {
     struct proxy *proxy = user_data;
-    char fname[PATH_MAX];
     char hciname[PATH_MAX];
-    int fd_name;
     int hci_index = -1;
     int sk = -1;
     struct hci_dev_info di;
 
-    snprintf(fname, PATH_MAX, "/sys/class/rfkill/rfkill%u/name", proxy->own_hci_index);
-    fd_name = open(fname, O_RDONLY);
-    if (fd_name < 0) {
-        fprintf(stderr, "Couldn't read rfkill name from %s!\n", fname);
+    if (!read_rfkill_name(proxy->own_hci_index, hciname, sizeof(hciname))) {
+        fprintf(stderr, "Couldn't read rfkill name for idx %d!\n", proxy->own_hci_index);
         g_main_loop_quit(proxy->loop);
         return G_SOURCE_REMOVE;
     }
-
-    /* read name */
-    memset(hciname, 0, sizeof(hciname));
-    if (read(fd_name, hciname, sizeof(hciname) - 1) < 0) {
-        fprintf(stderr, "Couldn't read rfkill name (2)!\n");
-        g_main_loop_quit(proxy->loop);
-        return G_SOURCE_REMOVE;
-    }
-    close(fd_name);
 
     sscanf(hciname, "hci%d", &hci_index);
     if (hci_index < 0) {
@@ -891,6 +943,7 @@ bluebinder_callbacks_transact(
             }
 
             if (!is_success) {
+                proxy->bluetooth_hal_initialized = FALSE;
                 fprintf(stderr, "Bluetooth binder service failed\n");
                 /* we need to tell BT service that we properly handled Status::INITIALIZATION_ERROR */
             } else {
@@ -1001,8 +1054,7 @@ rfkill_callback(
     gpointer user_data)
 {
     struct proxy *proxy = (struct proxy*)user_data;
-    gboolean bluetooth_on = FALSE;
-    bool bt_event = false;
+    bool configured_power_event = false;
 
     if (condition & (G_IO_NVAL | G_IO_HUP | G_IO_ERR)) {
         proxy->rfkill_watch_id = 0;
@@ -1021,12 +1073,45 @@ rfkill_callback(
                                           NULL);
 
         while (status == G_IO_STATUS_NORMAL && read == sizeof(event)) {
-            if (event.type == RFKILL_TYPE_BLUETOOTH && event.idx == proxy->own_hci_index) {
-                bt_event = true;
-                if (event.soft || event.hard) {
-                    bluetooth_on = FALSE;
+            if (event.type == RFKILL_TYPE_BLUETOOTH) {
+                gboolean bluetooth_on = !(event.soft || event.hard);
+                gboolean global_bt_event =
+                    is_global_bt_rfkill_index(proxy, event.idx);
+
+                if (global_bt_event) {
+                    /*
+                     * The global "bluetooth" rfkill is the requested host power
+                     * state, so mirror changes to binder. An on event also
+                     * retries HAL initialization if binder is still not ready.
+                     */
+                    gboolean power_changed =
+                        !proxy->bluetooth_powered_known ||
+                        proxy->bluetooth_powered != bluetooth_on;
+                    gboolean retry_init =
+                        bluetooth_on &&
+                        !configured_power_event &&
+                        !proxy->bluetooth_hal_initialized;
+
+                    if (power_changed || retry_init) {
+                        proxy->bluetooth_powered_known = TRUE;
+                        proxy->bluetooth_powered = bluetooth_on;
+                        configure_bt(proxy, bluetooth_on);
+                        configured_power_event = true;
+                    }
                 } else {
-                    bluetooth_on = TRUE;
+                    /*
+                     * Per-controller unblocked events are recovery hints: if
+                     * binder should already be powered but HAL init has not
+                     * completed, retry once for this rfkill batch.
+                     */
+                    if (bluetooth_on &&
+                        !configured_power_event &&
+                        !proxy->bluetooth_hal_initialized &&
+                        (!proxy->bluetooth_powered_known ||
+                            proxy->bluetooth_powered)) {
+                        configure_bt(proxy, TRUE);
+                        configured_power_event = true;
+                    }
                 }
             }
 
@@ -1040,10 +1125,6 @@ rfkill_callback(
         fprintf(stderr, "No data received in rfkill_callback!\n");
         proxy->rfkill_watch_id = 0;
         return G_SOURCE_REMOVE;
-    }
-
-    if (bt_event) {
-        configure_bt(proxy, bluetooth_on);
     }
 
     return G_SOURCE_CONTINUE;
@@ -1068,6 +1149,8 @@ int main(int argc, char *argv[])
     GBinderRemoteReply* reply = NULL;
 
     memset(&proxy, 0, sizeof(struct proxy));
+    proxy.own_hci_index = -1;
+    proxy.global_bt_rfkill_index = -1;
 
     proxy.sm = gbinder_servicemanager_new(GBINDER_DEFAULT_BINDER);
     if (!proxy.sm) {
@@ -1124,6 +1207,7 @@ int main(int argc, char *argv[])
 
     if (setup_vhci(&proxy)) {
         gboolean bluetooth_on = FALSE;
+        gboolean bluetooth_state_known = FALSE;
 
         proxy.rfkill_fd = open("/dev/rfkill", O_RDONLY);
         proxy.rfkill_channel = g_io_channel_unix_new(proxy.rfkill_fd);
@@ -1145,13 +1229,16 @@ int main(int argc, char *argv[])
                 }
             }
 
-            if (event.type == RFKILL_TYPE_BLUETOOTH && event.idx == proxy.own_hci_index) {
-                if (event.soft || event.hard) {
-                    bluetooth_on = FALSE;
-                } else {
-                    bluetooth_on = TRUE;
-                }
+            if (event.type == RFKILL_TYPE_BLUETOOTH &&
+                is_global_bt_rfkill_index(&proxy, event.idx)) {
+                bluetooth_on = !(event.soft || event.hard);
+                bluetooth_state_known = TRUE;
             }
+        }
+
+        if (bluetooth_state_known) {
+            proxy.bluetooth_powered_known = TRUE;
+            proxy.bluetooth_powered = bluetooth_on;
         }
 
 
