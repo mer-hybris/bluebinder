@@ -53,6 +53,8 @@
 
 #include <glib-unix.h>
 
+#include "mtu_quirk.h"
+
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 #define cpu_to_le16(val) (val)
 #elif __BYTE_ORDER == __BIG_ENDIAN
@@ -219,6 +221,9 @@ struct pending_packet {
 };
 
 struct proxy {
+    bool fix_mtu_response_pb;
+    struct mtu_quirk mtu_quirk;
+
     /* Receive commands, ACL and SCO data */
     int host_fd;
     gchar host_buf[4096];
@@ -387,6 +392,8 @@ host_write_packet(
     }
 
     if (tx_code != -1) {
+        if (proxy->fix_mtu_response_pb)
+            mtu_quirk_tx(&proxy->mtu_quirk, buf, len);
         gbinder_client_transact(proxy->binder_client, tx_code, 0, local_request, handle_binder_reply, NULL, proxy);
     }
 
@@ -431,6 +438,8 @@ configure_bt(
 {
     int status = 0;
     bool fail = FALSE;
+
+    mtu_quirk_reset(&proxy->mtu_quirk);
 
     if (bluetooth_on) {
         GBinderRemoteReply *reply;
@@ -1021,6 +1030,10 @@ bluebinder_callbacks_transact(
                 }
             }
 
+            if (proxy->fix_mtu_response_pb &&
+                mtu_quirk_rx(&proxy->mtu_quirk, packet, count + 1)) {
+                fprintf(stderr, "Corrected malformed initial ATT MTU response boundary\n");
+            }
             dev_write_packet(proxy, packet, count + 1);
 
             free(packet);
@@ -1141,6 +1154,7 @@ int main(int argc, char *argv[])
     GBinderRemoteReply* reply = NULL;
 
     memset(&proxy, 0, sizeof(struct proxy));
+    proxy.fix_mtu_response_pb = !g_strcmp0(getenv("BLUEBINDER_FIX_MTU_RESPONSE_PB"), "1");
     proxy.own_hci_index = -1;
     proxy.global_bt_rfkill_index = -1;
 

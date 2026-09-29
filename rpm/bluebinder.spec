@@ -25,6 +25,9 @@ The kernel API this depends on can be enabled with CONFIG_BT_HCIVHCI.
 %build
 %make_build
 
+%check
+make check
+
 %install
 rm -rf $RPM_BUILD_ROOT
 make install DESTDIR=$RPM_BUILD_ROOT
@@ -42,6 +45,7 @@ make clean
 
 %files
 %defattr(-,root,root,-)
+%doc MTU-QUIRK.md
 %{_sbindir}/bluebinder
 %{_unitdir}/graphical.target.wants/bluebinder.service
 %{_unitdir}/bluebinder.service

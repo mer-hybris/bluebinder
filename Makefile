@@ -10,8 +10,8 @@ endif
 
 build: bluebinder
 
-bluebinder: bluebinder.c
-	$(CC) $(CFLAGS) -Wall -flto $^ `pkg-config --cflags --libs $(DEPEND_LIBS)` -DUSE_SYSTEMD=$(USE_SYSTEMD) -o $@
+bluebinder: bluebinder.c mtu_quirk.c mtu_quirk.h
+	$(CC) $(CFLAGS) -Wall -flto bluebinder.c mtu_quirk.c `pkg-config --cflags --libs $(DEPEND_LIBS)` -DUSE_SYSTEMD=$(USE_SYSTEMD) -o $@
 
 install:
 	mkdir -p $(DESTDIR)/usr/sbin
@@ -20,3 +20,9 @@ install:
 clean:
 	rm bluebinder
 
+
+.PHONY: check
+check:
+	$(CC) $(CFLAGS) -Wall -Wextra -Werror -I. mtu_quirk.c tests/test_mtu_quirk.c -o test-mtu-quirk
+	./test-mtu-quirk
+	rm -f test-mtu-quirk
