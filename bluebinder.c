@@ -249,6 +249,21 @@ struct proxy {
     int death_id;
 
     GList *pending_packets;
+
+    /* ACL setups whose link-key events are held until Connection Complete
+     * has been written to VHCI. Delivering the key earlier makes the kernel
+     * abort a connection that is still BT_CONNECT. */
+    GList *pending_acls;
+};
+
+struct held_link_key {
+    uint8_t *packet;
+    uint16_t len;
+};
+
+struct pending_acl {
+    bdaddr_t bdaddr;
+    GList *keys;
 };
 
 static
@@ -424,6 +439,238 @@ dev_write_packet(
 }
 
 static
+const uint8_t *
+hci_event_params(
+    const uint8_t *packet,
+    uint16_t len,
+    uint8_t event,
+    uint8_t min_plen)
+{
+    if (!packet || packet[0] != HCI_EVENT_PKT || len < 3)
+        return NULL;
+    if (packet[1] != event || packet[2] < min_plen)
+        return NULL;
+    if (len < (uint16_t)(3 + packet[2]))
+        return NULL;
+    return packet + 3;
+}
+
+static
+void
+format_bdaddr(
+    const bdaddr_t *bdaddr,
+    char *address)
+{
+    sprintf(address, "%02X:%02X:%02X:%02X:%02X:%02X",
+            bdaddr->b[5], bdaddr->b[4], bdaddr->b[3],
+            bdaddr->b[2], bdaddr->b[1], bdaddr->b[0]);
+}
+
+static
+struct pending_acl *
+find_pending_acl(
+    struct proxy *proxy,
+    const bdaddr_t *bdaddr)
+{
+    GList *link;
+
+    for (link = proxy->pending_acls; link; link = link->next) {
+        struct pending_acl *pending = link->data;
+
+        if (!bacmp(&pending->bdaddr, bdaddr))
+            return pending;
+    }
+    return NULL;
+}
+
+static
+void
+free_held_link_key(
+    gpointer data)
+{
+    struct held_link_key *key = data;
+
+    free(key->packet);
+    g_free(key);
+}
+
+static
+void
+free_pending_acl(
+    gpointer data)
+{
+    struct pending_acl *pending = data;
+
+    g_list_free_full(pending->keys, free_held_link_key);
+    g_free(pending);
+}
+
+static
+void
+clear_pending_acls(
+    struct proxy *proxy)
+{
+    g_list_free_full(proxy->pending_acls, free_pending_acl);
+    proxy->pending_acls = NULL;
+}
+
+static
+void
+add_pending_acl(
+    struct proxy *proxy,
+    const uint8_t *bdaddr_bytes,
+    const char *why)
+{
+    struct pending_acl *pending;
+    bdaddr_t bdaddr;
+    char address[18];
+
+    memcpy(&bdaddr, bdaddr_bytes, sizeof(bdaddr));
+    if (find_pending_acl(proxy, &bdaddr))
+        return;
+
+    pending = g_new0(struct pending_acl, 1);
+    bacpy(&pending->bdaddr, &bdaddr);
+    proxy->pending_acls = g_list_append(proxy->pending_acls, pending);
+
+    format_bdaddr(&bdaddr, address);
+    fprintf(stderr, "%s %s; holding link key until connection complete\n",
+            why, address);
+}
+
+static
+void
+drop_pending_acl(
+    struct proxy *proxy,
+    const uint8_t *bdaddr_bytes)
+{
+    struct pending_acl *pending;
+    bdaddr_t bdaddr;
+    char address[18];
+
+    memcpy(&bdaddr, bdaddr_bytes, sizeof(bdaddr));
+    pending = find_pending_acl(proxy, &bdaddr);
+    if (!pending)
+        return;
+
+    proxy->pending_acls = g_list_remove(proxy->pending_acls, pending);
+    format_bdaddr(&bdaddr, address);
+    if (pending->keys)
+        fprintf(stderr, "Dropping deferred link key for %s, create connection cancelled\n",
+                address);
+    else
+        fprintf(stderr, "ACL setup %s cancelled before connection complete\n",
+                address);
+    free_pending_acl(pending);
+}
+
+static
+void
+note_pending_acl(
+    struct proxy *proxy,
+    const uint8_t *packet,
+    uint16_t len)
+{
+    const uint8_t *params;
+    uint16_t opcode;
+
+    /* Connection Request: bdaddr, class of device, link type. ACL is 0x01. */
+    params = hci_event_params(packet, len, 0x04, 10);
+    if (params && params[9] == 0x01) {
+        add_pending_acl(proxy, params, "Incoming ACL from");
+        return;
+    }
+
+    /* Create Connection and Create Connection Cancel carry the bdaddr
+     * in the first six parameter bytes. */
+    if (!packet || packet[0] != HCI_COMMAND_PKT || len < 10 || packet[3] < 6)
+        return;
+
+    opcode = packet[1] | ((uint16_t) packet[2] << 8);
+    if (opcode == cmd_opcode_pack(OGF_LINK_CTL, OCF_CREATE_CONN))
+        add_pending_acl(proxy, packet + 4, "Outgoing ACL to");
+    else if (opcode == cmd_opcode_pack(OGF_LINK_CTL, OCF_CREATE_CONN_CANCEL))
+        drop_pending_acl(proxy, packet + 4);
+}
+
+/* Returns true when packet ownership moves to the pending-ACL entry. */
+static
+bool
+hold_link_key_notification(
+    struct proxy *proxy,
+    uint8_t *packet,
+    uint16_t len)
+{
+    const uint8_t *params;
+    struct pending_acl *pending;
+    struct held_link_key *key;
+    bdaddr_t bdaddr;
+    char address[18];
+
+    /* Link Key Notification: bdaddr, key, key type. */
+    params = hci_event_params(packet, len, 0x18, 23);
+    if (!params)
+        return false;
+
+    memcpy(&bdaddr, params, sizeof(bdaddr));
+    pending = find_pending_acl(proxy, &bdaddr);
+    if (!pending)
+        return false;
+
+    key = g_new0(struct held_link_key, 1);
+    key->packet = packet;
+    key->len = len;
+    pending->keys = g_list_append(pending->keys, key);
+
+    format_bdaddr(&bdaddr, address);
+    fprintf(stderr, "Deferred link key notification for %s\n", address);
+    return true;
+}
+
+static
+void
+finish_pending_acl(
+    struct proxy *proxy,
+    const uint8_t *packet,
+    uint16_t len)
+{
+    const uint8_t *params;
+    struct pending_acl *pending;
+    bdaddr_t bdaddr;
+    char address[18];
+    GList *link;
+
+    /* Connection Complete: status, handle, bdaddr, link type, encryption. */
+    params = hci_event_params(packet, len, 0x03, 11);
+    if (!params || params[9] != 0x01)
+        return;
+
+    memcpy(&bdaddr, params + 3, sizeof(bdaddr));
+    pending = find_pending_acl(proxy, &bdaddr);
+    if (!pending)
+        return;
+
+    proxy->pending_acls = g_list_remove(proxy->pending_acls, pending);
+    format_bdaddr(&bdaddr, address);
+
+    if (params[0] != 0x00) {
+        if (pending->keys)
+            fprintf(stderr, "Dropping deferred link key for %s, connection status 0x%02x\n",
+                    address, params[0]);
+        free_pending_acl(pending);
+        return;
+    }
+
+    for (link = pending->keys; link; link = link->next) {
+        struct held_link_key *key = link->data;
+
+        fprintf(stderr, "Releasing deferred link key notification for %s\n", address);
+        dev_write_packet(proxy, key->packet, key->len);
+    }
+    free_pending_acl(pending);
+}
+
+static
 void
 configure_bt(
     struct proxy *proxy,
@@ -431,6 +678,8 @@ configure_bt(
 {
     int status = 0;
     bool fail = FALSE;
+
+    clear_pending_acls(proxy);
 
     if (bluetooth_on) {
         GBinderRemoteReply *reply;
@@ -590,6 +839,7 @@ process_packet:
         return G_SOURCE_CONTINUE;
     }
 
+    note_pending_acl(proxy, (const uint8_t *) proxy->host_buf, pktlen);
     host_write_packet(proxy, proxy->host_buf, pktlen);
 
     if (proxy->host_len > pktlen) {
@@ -674,6 +924,7 @@ binder_remote_died(
     int status;
 
     fprintf(stderr, "Remote has died, trying to reconnect...\n");
+    clear_pending_acls(proxy);
 
     gbinder_client_unref(proxy->binder_client);
     proxy->binder_client = NULL;
@@ -681,7 +932,7 @@ binder_remote_died(
     gbinder_remote_object_remove_handler(proxy->remote, proxy->death_id);
     gbinder_remote_object_unref(proxy->remote);
 
-    asprintf(&fqname, "%s/%s", proxy->protocol->service_name, proxy->protocol->service_slot);
+    fqname = g_strdup_printf("%s/%s", proxy->protocol->service_name, proxy->protocol->service_slot);
 
     int retries = 0;
     while (retries < 10) {
@@ -698,7 +949,7 @@ binder_remote_died(
         retries++;
     }
 
-    free(fqname);
+    g_free(fqname);
 
     if (!proxy->remote) goto failed;
 
@@ -1021,7 +1272,14 @@ bluebinder_callbacks_transact(
                 }
             }
 
+            note_pending_acl(proxy, packet, count + 1);
+            if (hold_link_key_notification(proxy, packet, count + 1)) {
+                *status = GBINDER_STATUS_OK;
+                return gbinder_local_reply_append_int32(gbinder_local_object_new_reply(obj), 0);
+            }
+
             dev_write_packet(proxy, packet, count + 1);
+            finish_pending_acl(proxy, packet, count + 1);
 
             free(packet);
 
@@ -1287,6 +1545,7 @@ unref:
         g_source_remove(proxy.rfkill_watch_id);
     }
 
+    clear_pending_acls(&proxy);
     stop_watch(&proxy);
 
     close(proxy.host_fd);
