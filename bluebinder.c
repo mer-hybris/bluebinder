@@ -249,6 +249,11 @@ struct proxy {
     int death_id;
 
     GList *pending_packets;
+
+    /* ACL setups whose link-key events are held until Connection Complete
+     * has been written to VHCI. Delivering the key earlier makes the kernel
+     * abort a connection that is still BT_CONNECT. */
+    GHashTable *pending_acls;
 };
 
 static
@@ -425,12 +430,107 @@ dev_write_packet(
 
 static
 void
+clear_pending_acls(
+    struct proxy *proxy)
+{
+    g_clear_pointer(&proxy->pending_acls, g_hash_table_unref);
+}
+
+/* Returns true if the packet was deferred or forwarded with its held keys. */
+static
+bool
+filter_acl_packet(
+    struct proxy *proxy,
+    uint8_t *packet,
+    uint16_t len)
+{
+    const uint8_t *addr, *params;
+    uint8_t event = 0;
+    GBytes *address;
+    GPtrArray *keys;
+    bool handled = false;
+
+    if (len >= 4 && packet[0] == HCI_COMMAND_PKT) {
+        if ((packet[1] | (packet[2] << 8)) != cmd_opcode_pack(OGF_LINK_CTL, OCF_CREATE_CONN) ||
+            packet[3] < CREATE_CONN_CP_SIZE || len < 4 + packet[3])
+            return false;
+        addr = packet + 4;
+    } else if (len >= 3 && packet[0] == HCI_EVENT_PKT && len >= 3 + packet[2]) {
+        event = packet[1];
+        params = packet + 3;
+        switch (event) {
+        case EVT_CONN_REQUEST:
+            if (packet[2] < EVT_CONN_REQUEST_SIZE || params[9] != ACL_LINK)
+                return false;
+            addr = params;
+            break;
+        case EVT_LINK_KEY_NOTIFY:
+            if (packet[2] < EVT_LINK_KEY_NOTIFY_SIZE)
+                return false;
+            addr = params;
+            break;
+        case EVT_CONN_COMPLETE:
+            if (packet[2] < EVT_CONN_COMPLETE_SIZE || params[9] != ACL_LINK)
+                return false;
+            addr = params + 3;
+            break;
+        case EVT_CMD_COMPLETE:
+            if (packet[2] >= EVT_CMD_COMPLETE_SIZE + 1 &&
+                (params[1] | (params[2] << 8)) == cmd_opcode_pack(OGF_HOST_CTL, OCF_RESET) &&
+                !params[3])
+                clear_pending_acls(proxy);
+            return false;
+        default:
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    address = g_bytes_new(addr, sizeof(bdaddr_t));
+    keys = proxy->pending_acls ? g_hash_table_lookup(proxy->pending_acls, address) : NULL;
+    if (!event || event == EVT_CONN_REQUEST) {
+        if (!proxy->pending_acls)
+            proxy->pending_acls = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                (GDestroyNotify) g_bytes_unref, (GDestroyNotify) g_ptr_array_unref);
+        if (!keys)
+            g_hash_table_insert(proxy->pending_acls, g_bytes_ref(address),
+                g_ptr_array_new_with_free_func((GDestroyNotify) g_bytes_unref));
+    } else if (keys) {
+        if (event == EVT_LINK_KEY_NOTIFY) {
+            g_ptr_array_add(keys, g_bytes_new(packet, len));
+        } else {
+            /* Cancel is only a request. Keep keys until Connection Complete
+             * confirms success or failure, including when cancellation races. */
+            dev_write_packet(proxy, packet, len);
+            if (!params[0]) {
+                guint i;
+
+                for (i = 0; i < keys->len; i++) {
+                    gsize size;
+                    const void *key = g_bytes_get_data(g_ptr_array_index(keys, i), &size);
+
+                    dev_write_packet(proxy, (void *) key, size);
+                }
+            }
+            g_hash_table_remove(proxy->pending_acls, address);
+        }
+        handled = true;
+    }
+    g_bytes_unref(address);
+    return handled;
+}
+
+static
+void
 configure_bt(
     struct proxy *proxy,
     gboolean bluetooth_on)
 {
     int status = 0;
     bool fail = FALSE;
+
+    clear_pending_acls(proxy);
 
     if (bluetooth_on) {
         GBinderRemoteReply *reply;
@@ -590,6 +690,7 @@ process_packet:
         return G_SOURCE_CONTINUE;
     }
 
+    filter_acl_packet(proxy, (uint8_t *) proxy->host_buf, pktlen);
     host_write_packet(proxy, proxy->host_buf, pktlen);
 
     if (proxy->host_len > pktlen) {
@@ -674,6 +775,7 @@ binder_remote_died(
     int status;
 
     fprintf(stderr, "Remote has died, trying to reconnect...\n");
+    clear_pending_acls(proxy);
 
     gbinder_client_unref(proxy->binder_client);
     proxy->binder_client = NULL;
@@ -681,7 +783,7 @@ binder_remote_died(
     gbinder_remote_object_remove_handler(proxy->remote, proxy->death_id);
     gbinder_remote_object_unref(proxy->remote);
 
-    asprintf(&fqname, "%s/%s", proxy->protocol->service_name, proxy->protocol->service_slot);
+    fqname = g_strdup_printf("%s/%s", proxy->protocol->service_name, proxy->protocol->service_slot);
 
     int retries = 0;
     while (retries < 10) {
@@ -698,7 +800,7 @@ binder_remote_died(
         retries++;
     }
 
-    free(fqname);
+    g_free(fqname);
 
     if (!proxy->remote) goto failed;
 
@@ -1021,7 +1123,8 @@ bluebinder_callbacks_transact(
                 }
             }
 
-            dev_write_packet(proxy, packet, count + 1);
+            if (!filter_acl_packet(proxy, packet, count + 1))
+                dev_write_packet(proxy, packet, count + 1);
 
             free(packet);
 
@@ -1287,6 +1390,7 @@ unref:
         g_source_remove(proxy.rfkill_watch_id);
     }
 
+    clear_pending_acls(&proxy);
     stop_watch(&proxy);
 
     close(proxy.host_fd);
