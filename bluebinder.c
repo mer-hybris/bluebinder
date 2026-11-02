@@ -896,6 +896,7 @@ bluebinder_callbacks_transact(
 {
     static unsigned long long local_features_mask = 0;
     static unsigned long long local_ext_features_page_2_mask = 0;
+    static unsigned long long local_supported_commands_le_add = 0;
     static int env_gotten = 0;
     struct proxy *proxy = user_data;
     const char* iface = gbinder_remote_request_interface(req);
@@ -909,6 +910,10 @@ bluebinder_callbacks_transact(
         if (ext_value)
             local_ext_features_page_2_mask = strtoull(ext_value, 0, 16);
         fprintf(stderr, "Got BLUEBINDER_LOCAL_EXT_FEATURES_PAGE_2_MASK 0x%llx\n", local_ext_features_page_2_mask);
+        const char *supported_commands = getenv("BLUEBINDER_LOCAL_SUPPORTED_COMMANDS_LE_ADD");
+        if (supported_commands)
+            local_supported_commands_le_add = strtoull(supported_commands, 0, 16);
+        fprintf(stderr, "Got BLUEBINDER_LOCAL_SUPPORTED_COMMANDS_LE_ADD 0x%llx\n", local_supported_commands_le_add);
         env_gotten = 1;
     }
 
@@ -1016,6 +1021,20 @@ bluebinder_callbacks_transact(
                             uint8_t mask = local_ext_features_page_2_mask >> (7 - l) * 8;
                             uint8_t data_out = data_in & ~mask;
                             packet[9+l] = data_out;
+                        }
+                    }
+                }
+            }
+            if (local_supported_commands_le_add) {
+                // Command complete
+                if (packet[0] == HCI_EVENT_PKT && count >= 70 && packet[1] == 0x0e) {
+                    // HCI_Read_Local_Supported_Commands
+                    if (((packet[5] << 8) | packet[4]) == 0x1002 && packet[6] == 0x00) {
+                        for (int l = 0; l < 4; l++) {
+                            uint8_t data_in = packet[32+l];
+                            uint8_t mask = local_supported_commands_le_add >> (3 - l) * 8;
+                            uint8_t data_out = data_in | mask;
+                            packet[32+l] = data_out;
                         }
                     }
                 }
