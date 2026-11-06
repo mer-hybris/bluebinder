@@ -12,9 +12,19 @@ fi
 
 mkdir -p /var/lib/bluetooth
 
+# The properties name a path inside the Android container. Where the host does
+# not share that path, the container's root is mounted at /android.
+container_file() {
+    if [ -n "$1" ] && [ ! -e "$1" ] && [ -e "/android$1" ]; then
+        echo "/android$1"
+    else
+        echo "$1"
+    fi
+}
+
 # Getting address file from properties
-bt_addr_file=$(/usr/bin/getprop ro.bt.bdaddr_path)
-bt_addr_vendor_file=$(/usr/bin/getprop ro.vendor.bt.bdaddr_path)
+bt_addr_file=$(container_file "$(/usr/bin/getprop ro.bt.bdaddr_path)")
+bt_addr_vendor_file=$(container_file "$(/usr/bin/getprop ro.vendor.bt.bdaddr_path)")
 if [ "$bt_addr_file" != "" ]; then
     if ! cp $bt_addr_file /var/lib/bluetooth/board-address; then
         echo "Failed to copy $bt_addr_file."
