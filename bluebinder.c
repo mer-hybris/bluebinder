@@ -896,6 +896,8 @@ bluebinder_callbacks_transact(
 {
     static unsigned long long local_features_mask = 0;
     static unsigned long long local_ext_features_page_2_mask = 0;
+    static unsigned char local_commands_set[64] = { 0 };
+    static int local_commands_set_any = 0;
     static int env_gotten = 0;
     struct proxy *proxy = user_data;
     const char* iface = gbinder_remote_request_interface(req);
@@ -909,6 +911,26 @@ bluebinder_callbacks_transact(
         if (ext_value)
             local_ext_features_page_2_mask = strtoull(ext_value, 0, 16);
         fprintf(stderr, "Got BLUEBINDER_LOCAL_EXT_FEATURES_PAGE_2_MASK 0x%llx\n", local_ext_features_page_2_mask);
+        const char *cmds_value = getenv("BLUEBINDER_LOCAL_COMMANDS_SET");
+        if (cmds_value) {
+            /* Comma separated <octet>:<hex mask> pairs, e.g. "26:18". */
+            const char *p = cmds_value;
+            while (*p) {
+                char *end;
+                unsigned long octet = strtoul(p, &end, 10);
+                if (end == p || *end != ':')
+                    break;
+                unsigned long mask = strtoul(end + 1, &end, 16);
+                if (octet < sizeof(local_commands_set) && mask <= 0xff) {
+                    local_commands_set[octet] |= (unsigned char)mask;
+                    local_commands_set_any = 1;
+                    fprintf(stderr, "Got BLUEBINDER_LOCAL_COMMANDS_SET octet %lu |= 0x%02lx\n", octet, mask);
+                }
+                if (*end != ',')
+                    break;
+                p = end + 1;
+            }
+        }
         env_gotten = 1;
     }
 
@@ -1016,6 +1038,30 @@ bluebinder_callbacks_transact(
                             uint8_t mask = local_ext_features_page_2_mask >> (7 - l) * 8;
                             uint8_t data_out = data_in & ~mask;
                             packet[9+l] = data_out;
+                        }
+                    }
+                }
+            }
+
+            if (local_commands_set_any) {
+                /* Command complete for HCI_Read_Local_Supported_Commands.
+                 *
+                 * Some controllers under-report here: they answer the command
+                 * fine but leave its bit clear, and the kernel keys real
+                 * behaviour off this bitmap rather than treating it as
+                 * informational. The MT6739 combo chip claims 137 classic
+                 * commands and zeroes octets 25-28, the entire LE range, so
+                 * hci_init leaves the matching bits out of the LE event mask
+                 * and the controller is then told to emit no LE meta events at
+                 * all - LE discovery finds nothing and LE connects time out, on
+                 * a chip whose LE commands every one return success. Let the
+                 * bits be put back.
+                 *
+                 * 3 bytes of event header, opcode and status, then 64 octets. */
+                if (packet[0] == HCI_EVENT_PKT && count >= 70 && packet[1] == 0x0e) {
+                    if (((packet[5] << 8) | packet[4]) == 0x1002) {
+                        for (int l = 0; l < 64; l++) {
+                            packet[7+l] |= local_commands_set[l];
                         }
                     }
                 }
