@@ -862,6 +862,16 @@ check_bt_state(
     bdaddr_t zero_bdaddr;
     memset(&zero_bdaddr, 0, sizeof(bdaddr_t));
 
+    // First two bits of MSB equal to 0 mean it's a private, non-resolvable address.
+    // This is set before the real address is loaded, exit to try again
+    int is_private_nonresolvable = (di.bdaddr.b[5] & 0b11000000) == 0;
+    if (is_private_nonresolvable && (memcmp(&zero_bdaddr, &di.bdaddr, sizeof(bdaddr_t)) != 0)) {
+        fprintf(stderr, "Address is still private non-resolvable: %x:%x:%x:%x:%x:%x!",
+            di.bdaddr.b[5], di.bdaddr.b[4], di.bdaddr.b[3], di.bdaddr.b[2], di.bdaddr.b[1], di.bdaddr.b[0]);
+        g_main_loop_quit(proxy->loop);
+        return G_SOURCE_REMOVE;
+    }
+
     if ((hci_test_bit(HCI_UP, &di.flags) && !hci_test_bit(HCI_INIT, &di.flags))
         || (!hci_test_bit(HCI_RUNNING, &di.flags) && (memcmp(&zero_bdaddr, &di.bdaddr, sizeof(bdaddr_t)) != 0))) {
         fprintf(stderr, "Successfully initialized vhci bluetooth\n");
